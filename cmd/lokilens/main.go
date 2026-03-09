@@ -18,7 +18,6 @@ import (
 	"github.com/lokilens/lokilens/internal/bot"
 	"github.com/lokilens/lokilens/internal/config"
 	"github.com/lokilens/lokilens/internal/health"
-	"github.com/lokilens/lokilens/internal/license"
 	"github.com/lokilens/lokilens/internal/loki"
 	"github.com/lokilens/lokilens/internal/manager"
 	"github.com/lokilens/lokilens/internal/oauth"
@@ -42,34 +41,17 @@ func main() {
 	}))
 	slog.SetDefault(logger)
 
-	// License validation
-	checker, err := license.New(license.Config{
-		Account:    "8e78d45b-7dcc-4380-b319-b80c74cad3b4",
-		Product:    "1cbf8cba",
-		PublicKey:  "e0527bf080ad8b645de3aecb1788ecc3ed4c5f4759aec0d5e231675b6b5130e6",
-		LicenseKey: cfg.LicenseKey,
-		Logger:     logger,
-	})
-	if err != nil {
-		logger.Error("failed to initialize license checker", "error", err)
-		os.Exit(1)
-	}
-	if err := checker.Start(ctx); err != nil {
-		logger.Error("license validation failed", "error", err)
-		os.Exit(1)
-	}
-
 	if cfg.MultiTenant() {
 		runMultiTenant(ctx, cfg, logger)
 	} else {
-		runSingleTenant(ctx, cfg, logger, checker)
+		runSingleTenant(ctx, cfg, logger)
 	}
 
 	logger.Info("LokiLens shut down gracefully")
 }
 
 // runSingleTenant is the original startup path — one workspace, all config from env vars.
-func runSingleTenant(ctx context.Context, cfg *config.Config, logger *slog.Logger, licenseChecker *license.Checker) {
+func runSingleTenant(ctx context.Context, cfg *config.Config, logger *slog.Logger) {
 	logger.Info("LokiLens starting (single-tenant)",
 		"gemini_model", cfg.GeminiModel,
 		"loki_url", cfg.LokiBaseURL,
@@ -96,10 +78,9 @@ func runSingleTenant(ctx context.Context, cfg *config.Config, logger *slog.Logge
 
 	// Health server for Kubernetes probes
 	healthSrv := health.New(health.Config{
-		Addr:           cfg.HealthAddr,
-		LokiClient:     lokiClient,
-		LicenseChecker: licenseChecker,
-		Logger:         logger,
+		Addr:       cfg.HealthAddr,
+		LokiClient: lokiClient,
+		Logger:     logger,
 	})
 	go healthSrv.Run(ctx)
 

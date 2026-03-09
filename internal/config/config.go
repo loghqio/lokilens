@@ -129,9 +129,6 @@ func (c *Config) validate() error {
 
 func (c *Config) validateSingleTenant() error {
 	var missing []string
-	if c.LicenseKey == "" {
-		missing = append(missing, "LICENSE_KEY")
-	}
 	if c.SlackBotToken == "" {
 		missing = append(missing, "SLACK_BOT_TOKEN")
 	}
@@ -160,9 +157,6 @@ func (c *Config) validateSingleTenant() error {
 
 func (c *Config) validateMultiTenant() error {
 	var missing []string
-	if c.LicenseKey == "" {
-		missing = append(missing, "LICENSE_KEY")
-	}
 	if c.EncryptionKey == "" {
 		missing = append(missing, "ENCRYPTION_KEY")
 	}
