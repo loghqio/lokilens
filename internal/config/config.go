@@ -24,10 +24,8 @@ type Config struct {
 	LokiMaxRetries int
 
 	// Safety
-	MaxTimeRange     time.Duration
-	MaxResults       int
-	RateLimitPerUser int
-	RateLimitBurst   int
+	MaxTimeRange time.Duration
+	MaxResults   int
 
 	// Server
 	HealthAddr string
@@ -62,8 +60,6 @@ func Load() (*Config, error) {
 		LokiMaxRetries: envInt("LOKI_MAX_RETRIES", 2),
 		MaxTimeRange:   envDuration("MAX_TIME_RANGE", 24*time.Hour),
 		MaxResults:     envInt("MAX_RESULTS", 500),
-		RateLimitPerUser: envInt("RATE_LIMIT_PER_USER", 20),
-		RateLimitBurst:   envInt("RATE_LIMIT_BURST", 5),
 		HealthAddr:       envOrDefault("HEALTH_ADDR", ":8080"),
 		LogLevel:         envOrDefault("LOG_LEVEL", "info"),
 		LicenseKey:       os.Getenv("LICENSE_KEY"),

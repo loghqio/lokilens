@@ -3,6 +3,7 @@ package oauth
 import (
 	"context"
 	"crypto/hmac"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -13,11 +14,20 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/slack-go/slack"
 
 	"github.com/lokilens/lokilens/internal/store"
+)
+
+const (
+	// maxRequestBodySize limits request body reads to prevent OOM from oversized payloads.
+	maxRequestBodySize = 1 << 20 // 1 MB
+
+	// oauthStateTTL is how long an OAuth state token is valid.
+	oauthStateTTL = 10 * time.Minute
 )
 
 // WorkspaceManager manages workspace bot lifecycles.
@@ -45,11 +55,21 @@ type Handler struct {
 	baseURL       string
 	store         store.WorkspaceStore
 	wizard        SetupWizard
+	mgr           WorkspaceAdder
 	logger        *slog.Logger
 
 	// slackAPIForWorkspace returns a Slack API client for the given workspace.
 	// Set by the caller after construction.
 	SlackAPIForWorkspace func(workspaceID string) *slack.Client
+
+	// oauthStates stores CSRF tokens for the OAuth flow.
+	oauthStatesMu sync.Mutex
+	oauthStates   map[string]time.Time
+}
+
+// WorkspaceAdder can add a new workspace to the bot manager at runtime.
+type WorkspaceAdder interface {
+	AddWorkspace(ctx context.Context, workspaceID string) error
 }
 
 // Config holds configuration for the OAuth handler.
@@ -61,6 +81,7 @@ type Config struct {
 	BaseURL       string
 	Store         store.WorkspaceStore
 	Wizard        SetupWizard
+	Manager       WorkspaceAdder
 	Logger        *slog.Logger
 }
 
@@ -74,7 +95,9 @@ func NewHandler(cfg Config) *Handler {
 		baseURL:       cfg.BaseURL,
 		store:         cfg.Store,
 		wizard:        cfg.Wizard,
+		mgr:           cfg.Manager,
 		logger:        cfg.Logger,
+		oauthStates:   make(map[string]time.Time),
 	}
 }
 
@@ -86,7 +109,7 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /slack/commands", h.HandleSlashCommand)
 }
 
-// HandleStart redirects to Slack's OAuth authorize URL.
+// HandleStart redirects to Slack's OAuth authorize URL with a CSRF state token.
 func (h *Handler) HandleStart(w http.ResponseWriter, r *http.Request) {
 	scopes := []string{
 		"app_mentions:read",
@@ -98,18 +121,68 @@ func (h *Handler) HandleStart(w http.ResponseWriter, r *http.Request) {
 		"commands",
 	}
 
+	state := h.generateOAuthState()
+
 	authURL := fmt.Sprintf(
-		"https://slack.com/oauth/v2/authorize?client_id=%s&scope=%s&redirect_uri=%s",
+		"https://slack.com/oauth/v2/authorize?client_id=%s&scope=%s&redirect_uri=%s&state=%s",
 		url.QueryEscape(h.clientID),
 		url.QueryEscape(strings.Join(scopes, ",")),
 		url.QueryEscape(h.baseURL+"/slack/oauth/callback"),
+		url.QueryEscape(state),
 	)
 
 	http.Redirect(w, r, authURL, http.StatusFound)
 }
 
+// generateOAuthState creates a random state token and stores it with a TTL.
+func (h *Handler) generateOAuthState() string {
+	b := make([]byte, 32)
+	if _, err := rand.Read(b); err != nil {
+		h.logger.Error("failed to generate OAuth state", "error", err)
+		return ""
+	}
+	state := hex.EncodeToString(b)
+
+	h.oauthStatesMu.Lock()
+	// Evict expired states
+	now := time.Now()
+	for k, v := range h.oauthStates {
+		if now.After(v) {
+			delete(h.oauthStates, k)
+		}
+	}
+	h.oauthStates[state] = now.Add(oauthStateTTL)
+	h.oauthStatesMu.Unlock()
+
+	return state
+}
+
+// validateOAuthState checks and consumes a state token. Returns false if invalid or expired.
+func (h *Handler) validateOAuthState(state string) bool {
+	if state == "" {
+		return false
+	}
+	h.oauthStatesMu.Lock()
+	defer h.oauthStatesMu.Unlock()
+
+	expiry, ok := h.oauthStates[state]
+	if !ok {
+		return false
+	}
+	delete(h.oauthStates, state)
+	return time.Now().Before(expiry)
+}
+
 // HandleCallback processes the OAuth redirect from Slack.
 func (h *Handler) HandleCallback(w http.ResponseWriter, r *http.Request) {
+	// Validate CSRF state token
+	state := r.URL.Query().Get("state")
+	if !h.validateOAuthState(state) {
+		h.logger.Warn("OAuth callback with invalid state token")
+		http.Error(w, "Invalid or expired authorization request. Please try again.", http.StatusBadRequest)
+		return
+	}
+
 	code := r.URL.Query().Get("code")
 	if code == "" {
 		errMsg := r.URL.Query().Get("error")
@@ -162,8 +235,6 @@ func (h *Handler) HandleCallback(w http.ResponseWriter, r *http.Request) {
 			TeamName:         teamName,
 			BotToken:         botToken,
 			DailyQueryLimit:  100,
-			RateLimitPerUser: 20,
-			RateLimitBurst:   5,
 			MaxTimeRange:     24 * time.Hour,
 			MaxResults:       500,
 			InstalledBy:      installerID,
@@ -176,16 +247,24 @@ func (h *Handler) HandleCallback(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Start the workspace bot (uses SlackAPIForWorkspace callback set by main)
-	if h.SlackAPIForWorkspace != nil {
-		// Trigger setup wizard using the bot's own API client after bot starts
+	// Start the workspace bot via the manager, then trigger setup wizard
+	if h.mgr != nil {
 		go func() {
-			// Small delay to let the bot connect
-			time.Sleep(2 * time.Second)
-			api := h.SlackAPIForWorkspace(workspaceID)
-			if api != nil {
-				if err := h.wizard.StartSetup(api, workspaceID, installerID); err != nil {
-					h.logger.Error("failed to start setup wizard", "workspace", workspaceID, "error", err)
+			ctx := context.Background()
+			if err := h.mgr.AddWorkspace(ctx, workspaceID); err != nil {
+				h.logger.Error("failed to start workspace bot after OAuth", "workspace", workspaceID, "error", err)
+				return
+			}
+
+			// Give the socket connection a moment to establish
+			time.Sleep(3 * time.Second)
+
+			if h.SlackAPIForWorkspace != nil {
+				api := h.SlackAPIForWorkspace(workspaceID)
+				if api != nil {
+					if err := h.wizard.StartSetup(api, workspaceID, installerID); err != nil {
+						h.logger.Error("failed to start setup wizard", "workspace", workspaceID, "error", err)
+					}
 				}
 			}
 		}()
@@ -204,22 +283,24 @@ func (h *Handler) HandleCallback(w http.ResponseWriter, r *http.Request) {
 
 // HandleInteraction processes Slack interaction payloads (modal submissions, button clicks).
 func (h *Handler) HandleInteraction(w http.ResponseWriter, r *http.Request) {
-	if !h.verifyRequest(r) {
-		http.Error(w, "Invalid signature", http.StatusUnauthorized)
-		return
-	}
-
-	body, err := io.ReadAll(r.Body)
+	// Read body once with size limit, then verify signature and parse payload from the same bytes.
+	body, err := io.ReadAll(io.LimitReader(r.Body, maxRequestBodySize))
 	if err != nil {
 		http.Error(w, "Bad request", http.StatusBadRequest)
 		return
 	}
 
-	payloadStr := r.FormValue("payload")
+	if !h.verifySignature(r.Header, body) {
+		http.Error(w, "Invalid signature", http.StatusUnauthorized)
+		return
+	}
+
+	// Parse payload from the body we already have
+	vals, _ := url.ParseQuery(string(body))
+	payloadStr := vals.Get("payload")
 	if payloadStr == "" {
-		// Try to parse from body
-		vals, _ := url.ParseQuery(string(body))
-		payloadStr = vals.Get("payload")
+		http.Error(w, "Missing payload", http.StatusBadRequest)
+		return
 	}
 
 	var payload slack.InteractionCallback
@@ -247,8 +328,18 @@ func (h *Handler) HandleInteraction(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) handleBlockAction(w http.ResponseWriter, api *slack.Client, payload slack.InteractionCallback) {
+	teamID := payload.Team.ID
+
 	for _, action := range payload.ActionCallback.BlockActions {
 		workspaceID := action.Value
+
+		// Validate that the workspace ID in the action matches the team sending the event.
+		// Prevents cross-workspace action tampering.
+		if workspaceID != teamID {
+			h.logger.Warn("workspace ID mismatch in block action",
+				"action_workspace", workspaceID, "team", teamID)
+			continue
+		}
 
 		switch action.ActionID {
 		case "setup_loki_url":
@@ -271,6 +362,15 @@ func (h *Handler) handleBlockAction(w http.ResponseWriter, api *slack.Client, pa
 func (h *Handler) handleViewSubmission(w http.ResponseWriter, r *http.Request, api *slack.Client, payload slack.InteractionCallback) {
 	workspaceID := payload.View.PrivateMetadata
 	userID := payload.User.ID
+
+	// Validate that the workspace ID in the modal metadata matches the team
+	// sending the event. Matches the cross-workspace check in handleBlockAction.
+	if workspaceID != "" && workspaceID != payload.Team.ID {
+		h.logger.Warn("workspace ID mismatch in view submission",
+			"metadata_workspace", workspaceID, "team", payload.Team.ID)
+		http.Error(w, "Workspace mismatch", http.StatusBadRequest)
+		return
+	}
 
 	switch payload.View.CallbackID {
 	case "callback_loki_config":
@@ -304,10 +404,20 @@ func (h *Handler) handleViewSubmission(w http.ResponseWriter, r *http.Request, a
 
 // HandleSlashCommand processes the /lokilens-setup slash command.
 func (h *Handler) HandleSlashCommand(w http.ResponseWriter, r *http.Request) {
-	if !h.verifyRequest(r) {
+	// Read body once with size limit, then verify signature.
+	body, err := io.ReadAll(io.LimitReader(r.Body, maxRequestBodySize))
+	if err != nil {
+		http.Error(w, "Bad request", http.StatusBadRequest)
+		return
+	}
+
+	if !h.verifySignature(r.Header, body) {
 		http.Error(w, "Invalid signature", http.StatusUnauthorized)
 		return
 	}
+
+	// Restore body so SlashCommandParse can read it.
+	r.Body = io.NopCloser(strings.NewReader(string(body)))
 
 	cmd, err := slack.SlashCommandParse(r)
 	if err != nil {
@@ -322,6 +432,13 @@ func (h *Handler) HandleSlashCommand(w http.ResponseWriter, r *http.Request) {
 
 	workspaceID := cmd.TeamID
 	userID := cmd.UserID
+
+	// Authorization check: only the original installer or workspace admins should configure.
+	ws, wsErr := h.store.Get(r.Context(), workspaceID)
+	if wsErr == nil && ws.InstalledBy != "" && ws.InstalledBy != userID {
+		w.Write([]byte("Only the workspace administrator who installed LokiLens can run setup. Contact <@" + ws.InstalledBy + ">."))
+		return
+	}
 
 	api := h.getAPIForTeam(workspaceID)
 	if api == nil {
@@ -350,16 +467,17 @@ func (h *Handler) getAPIForTeam(teamID string) *slack.Client {
 	return nil
 }
 
-// verifyRequest validates Slack's request signature.
-func (h *Handler) verifyRequest(r *http.Request) bool {
-	timestamp := r.Header.Get("X-Slack-Request-Timestamp")
-	signature := r.Header.Get("X-Slack-Signature")
+// verifySignature validates Slack's request signature against pre-read body bytes.
+// This avoids the double-read problem where body is consumed before parsing.
+func (h *Handler) verifySignature(header http.Header, body []byte) bool {
+	timestamp := header.Get("X-Slack-Request-Timestamp")
+	signature := header.Get("X-Slack-Signature")
 
 	if timestamp == "" || signature == "" {
 		return false
 	}
 
-	// Check timestamp is within 5 minutes
+	// Check timestamp is within 5 minutes to prevent replay attacks
 	ts, err := strconv.ParseInt(timestamp, 10, 64)
 	if err != nil {
 		return false
@@ -368,14 +486,7 @@ func (h *Handler) verifyRequest(r *http.Request) bool {
 		return false
 	}
 
-	// Read and restore body
-	body, err := io.ReadAll(r.Body)
-	if err != nil {
-		return false
-	}
-	r.Body = io.NopCloser(strings.NewReader(string(body)))
-
-	// Compute HMAC
+	// Compute HMAC-SHA256
 	baseString := fmt.Sprintf("v0:%s:%s", timestamp, string(body))
 	mac := hmac.New(sha256.New, []byte(h.signingSecret))
 	mac.Write([]byte(baseString))

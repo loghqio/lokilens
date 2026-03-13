@@ -25,15 +25,6 @@ func (a *Logger) MessageReceived(user, channel, sessionID, source string) {
 	)
 }
 
-// RateLimitExceeded logs a rate limit violation.
-func (a *Logger) RateLimitExceeded(user, channel string) {
-	a.l.Warn("rate_limit_exceeded",
-		"event", "rate_limit_exceeded",
-		"user", user,
-		"channel", channel,
-	)
-}
-
 // PromptInjectionBlocked logs a blocked prompt injection attempt.
 func (a *Logger) PromptInjectionBlocked(user, channel string) {
 	a.l.Warn("prompt_injection_blocked",

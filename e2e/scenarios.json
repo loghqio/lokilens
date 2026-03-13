@@ -97,6 +97,153 @@
       "expect": [],
       "reject": ["**"],
       "max_secs": 60
+    },
+    {
+      "name": "Help command",
+      "query": "help",
+      "expect": ["LokiLens", "errors", "services"],
+      "reject": [],
+      "max_secs": 15
+    },
+    {
+      "name": "Casual time reference — since the deploy",
+      "query": "Show me errors since the deploy",
+      "expect": ["error"],
+      "reject": [],
+      "max_secs": 60
+    },
+    {
+      "name": "Root cause investigation",
+      "query": "Why is checkout broken?",
+      "expect": [],
+      "reject": [],
+      "max_secs": 90
+    },
+    {
+      "name": "Comparison query",
+      "query": "Compare error rates today vs yesterday",
+      "expect": [],
+      "reject": [],
+      "max_secs": 90
+    },
+    {
+      "name": "Fuzzy service name",
+      "query": "Show me errors from pymts",
+      "expect": ["payment"],
+      "reject": [],
+      "max_secs": 60
+    },
+    {
+      "name": "Severity tagging — healthy response",
+      "query": "Is the users service healthy?",
+      "expect": [],
+      "reject": ["**"],
+      "max_secs": 60
+    },
+    {
+      "name": "Slack formatting — no markdown headings",
+      "query": "Give me a status report across all services",
+      "expect": [],
+      "reject": ["## ", "# "],
+      "max_secs": 60
+    },
+    {
+      "name": "Gratitude — no Loki query needed",
+      "query": "thanks!",
+      "expect": ["welcome", "help"],
+      "reject": [],
+      "max_secs": 10
+    },
+    {
+      "name": "Raw LogQL passthrough",
+      "query": "{service=\"payments\", level=\"error\"} |= \"timeout\"",
+      "expect": ["payments"],
+      "reject": [],
+      "max_secs": 60
+    },
+    {
+      "name": "Count/aggregation query",
+      "query": "How many errors did payments have in the last hour?",
+      "expect": ["payments"],
+      "reject": [],
+      "max_secs": 60
+    },
+    {
+      "name": "Why question — root cause",
+      "query": "Why is the gateway returning 503s?",
+      "expect": ["gateway"],
+      "reject": [],
+      "max_secs": 90
+    },
+    {
+      "name": "Greeting — no Loki query needed",
+      "query": "hi",
+      "expect": ["log", "LokiLens"],
+      "reject": [],
+      "max_secs": 10
+    },
+    {
+      "name": "Causal question — is this related to X?",
+      "query": "Is the payments outage related to the database migration?",
+      "expect": ["payments"],
+      "reject": [],
+      "max_secs": 90
+    },
+    {
+      "name": "What happened — past tense investigation",
+      "query": "What happened to the orders service around 2pm?",
+      "expect": ["orders"],
+      "reject": [],
+      "max_secs": 60
+    },
+    {
+      "name": "Specific limit — show me last N",
+      "query": "Show me the last 3 errors from gateway",
+      "expect": ["gateway"],
+      "reject": [],
+      "max_secs": 60
+    },
+    {
+      "name": "Overview / situation report",
+      "query": "Give me a quick overview of the last hour",
+      "expect": [],
+      "reject": ["**"],
+      "max_secs": 60
+    },
+    {
+      "name": "Breakdown phrasing — not misinterpreted as outage",
+      "query": "Give me a breakdown of errors by service",
+      "expect": ["error"],
+      "reject": [],
+      "max_secs": 60
+    },
+    {
+      "name": "Functional name — checkout maps to orders/payments",
+      "query": "Why is checkout broken?",
+      "expect": [],
+      "reject": [],
+      "max_secs": 90
+    },
+    {
+      "name": "Functional name — login maps to users service",
+      "query": "Are there login errors?",
+      "expect": ["user"],
+      "reject": [],
+      "max_secs": 60
+    },
+    {
+      "name": "Severity verdict present",
+      "query": "How is the payments service doing?",
+      "expect": [],
+      "reject": ["**"],
+      "max_secs": 60
+    },
+    {
+      "name": "Ambiguous follow-up phrasing",
+      "query": "what about the last 30 min",
+      "expect": [],
+      "reject": [],
+      "max_secs": 60
     }
   ]
 }

@@ -4,6 +4,9 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"net"
+	"net/url"
+	"strings"
 	"time"
 
 	"github.com/slack-go/slack"
@@ -133,6 +136,11 @@ func (w *Wizard) HandleLokiConfigSubmission(ctx context.Context, api *slack.Clie
 
 	if lokiURL == "" {
 		return map[string]string{"loki_url": "Loki URL is required"}, nil
+	}
+
+	// SSRF protection: validate the URL before making any requests
+	if err := validateLokiURL(lokiURL); err != nil {
+		return map[string]string{"loki_url": err.Error()}, nil
 	}
 
 	// Validate the Loki connection
@@ -312,4 +320,50 @@ func (w *Wizard) sendCompletionMessage(api *slack.Client, workspaceID, userID st
 		slack.MsgOptionBlocks(blocks...),
 		slack.MsgOptionText("LokiLens is ready! Try asking about your logs.", false),
 	)
+}
+
+// validateLokiURL checks that a user-supplied Loki URL is safe to connect to.
+// Prevents SSRF by rejecting internal/private network addresses.
+func validateLokiURL(rawURL string) error {
+	rawURL = strings.TrimSpace(rawURL)
+
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return fmt.Errorf("invalid URL: %v", err)
+	}
+
+	// Only allow http and https schemes
+	if u.Scheme != "http" && u.Scheme != "https" {
+		return fmt.Errorf("URL must use http:// or https://")
+	}
+
+	if u.Host == "" {
+		return fmt.Errorf("URL must include a hostname")
+	}
+
+	// Extract the hostname (without port)
+	hostname := u.Hostname()
+
+	// Reject obvious internal hostnames
+	if hostname == "localhost" || hostname == "127.0.0.1" || hostname == "::1" || hostname == "0.0.0.0" {
+		return fmt.Errorf("localhost URLs are not allowed in multi-tenant mode")
+	}
+
+	// Resolve DNS and check for private IP ranges
+	ips, err := net.LookupHost(hostname)
+	if err != nil {
+		return fmt.Errorf("cannot resolve hostname %q: %v", hostname, err)
+	}
+
+	for _, ipStr := range ips {
+		ip := net.ParseIP(ipStr)
+		if ip == nil {
+			continue
+		}
+		if ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() {
+			return fmt.Errorf("URL resolves to a private/internal address (%s) — use a public Loki endpoint", ipStr)
+		}
+	}
+
+	return nil
 }

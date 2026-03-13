@@ -171,7 +171,6 @@ func (m *BotManager) startBundle(ctx context.Context, ws *store.Workspace) error
 	}
 
 	// Safety components
-	rl := safety.NewRateLimiter(ws.RateLimitPerUser, ws.RateLimitBurst)
 	cb := safety.NewCircuitBreaker(5, 30*time.Second)
 
 	// Usage checker (only for shared key workspaces)
@@ -191,7 +190,6 @@ func (m *BotManager) startBundle(ctx context.Context, ws *store.Workspace) error
 		BotToken:        ws.BotToken,
 		AppToken:        m.appToken,
 		Agent:           agent,
-		RateLimiter:     rl,
 		PIIFilter:       safety.NewPIIFilter(),
 		PromptGuard:     safety.NewPromptGuard(),
 		CircuitBreaker:  cb,
@@ -211,7 +209,6 @@ func (m *BotManager) startBundle(ctx context.Context, ws *store.Workspace) error
 		Bot:            slackBot,
 		Agent:          agent,
 		LokiClient:    lokiClient,
-		RateLimiter:    rl,
 		CircuitBreaker: cb,
 		Cancel:         agentCancel,
 	}

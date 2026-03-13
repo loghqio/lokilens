@@ -2,6 +2,7 @@ package bot
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"strings"
 	"sync"
@@ -22,7 +23,6 @@ type Config struct {
 	BotToken       string
 	AppToken       string
 	Agent          *agentpkg.Agent
-	RateLimiter    *safety.RateLimiter
 	PIIFilter      *safety.PIIFilter
 	PromptGuard    *safety.PromptGuard
 	CircuitBreaker *safety.CircuitBreaker
@@ -42,6 +42,11 @@ type Bot struct {
 	handler *Handler
 	logger  *slog.Logger
 
+	// selfMention is the Slack mention tag for this bot (e.g. "<@U12345>").
+	// Used to distinguish the bot's own mentions from mentions of other users
+	// in thread follow-up deduplication.
+	selfMention string
+
 	ctx context.Context
 	sem chan struct{}
 	wg  sync.WaitGroup
@@ -54,12 +59,19 @@ func New(cfg Config) (*Bot, error) {
 		slack.OptionAppLevelToken(cfg.AppToken),
 	)
 
+	// Resolve the bot's own user ID so we can distinguish self-mentions
+	// from mentions of other users in thread follow-up deduplication.
+	authResp, err := api.AuthTest()
+	if err != nil {
+		return nil, fmt.Errorf("slack auth test: %w", err)
+	}
+	selfMention := "<@" + authResp.UserID + ">"
+
 	client := socketmode.New(api)
 
 	handler := NewHandler(HandlerConfig{
 		SlackAPI:        api,
 		Agent:           cfg.Agent,
-		RateLimiter:     cfg.RateLimiter,
 		PIIFilter:       cfg.PIIFilter,
 		PromptGuard:     cfg.PromptGuard,
 		CircuitBreaker:  cfg.CircuitBreaker,
@@ -71,11 +83,12 @@ func New(cfg Config) (*Bot, error) {
 	})
 
 	return &Bot{
-		api:     api,
-		client:  client,
-		handler: handler,
-		logger:  cfg.Logger,
-		sem:     make(chan struct{}, maxConcurrentRequests),
+		api:         api,
+		client:      client,
+		handler:     handler,
+		logger:      cfg.Logger,
+		selfMention: selfMention,
+		sem:         make(chan struct{}, maxConcurrentRequests),
 	}, nil
 }
 
@@ -137,6 +150,16 @@ func (b *Bot) dispatch(channel, userID, text, threadTS, messageTS, source string
 	go func() {
 		defer b.wg.Done()
 		defer func() { <-b.sem }()
+		defer func() {
+			if r := recover(); r != nil {
+				b.logger.Error("panic in message handler (recovered)",
+					"panic", fmt.Sprintf("%v", r),
+					"user", userID,
+					"channel", channel,
+					"source", source,
+				)
+			}
+		}()
 		b.handler.HandleMessage(b.ctx, channel, userID, text, threadTS, messageTS, source)
 	}()
 }
@@ -172,10 +195,9 @@ func (b *Bot) onAppMention(evt *socketmode.Event, client *socketmode.Client) {
 	}
 
 	query := StripMention(mention.Text)
-	if query == "" {
-		return
-	}
 
+	// Don't drop empty queries — handler.quickReplyFor("") returns a greeting.
+	// Silently ignoring @LokiLens with no text looks like the bot is broken.
 	b.dispatch(mention.Channel, mention.User, query, mention.ThreadTimeStamp, mention.TimeStamp, "mention")
 }
 
@@ -204,17 +226,19 @@ func (b *Bot) onMessage(evt *socketmode.Event, client *socketmode.Client) {
 	// Handle DMs — no @mention required, strip mention if present
 	if IsDM(msgEvent.Channel) {
 		text := StripMention(msgEvent.Text)
-		if text == "" {
-			return
-		}
+		// Don't drop empty text — handler.quickReplyFor("") returns a greeting.
 		b.dispatch(msgEvent.Channel, msgEvent.User, text, msgEvent.ThreadTimeStamp, msgEvent.TimeStamp, "dm")
 		return
 	}
 
 	// Handle thread follow-ups in channels where bot is active (no @mention needed)
 	if msgEvent.ThreadTimeStamp != "" && b.handler.IsActiveThread(msgEvent.Channel, msgEvent.ThreadTimeStamp) {
-		// Skip @mentions — they're handled by onAppMention
-		if strings.HasPrefix(strings.TrimSpace(msgEvent.Text), "<@") {
+		// Skip messages that mention this bot — onAppMention handles those.
+		// Only check for the bot's own mention, not any <@...> mention:
+		// "I talked to @jsmith about this, any errors?" should still be processed
+		// as a thread follow-up, but "hey @LokiLens drill into that" must be
+		// left to onAppMention to avoid double dispatch.
+		if strings.Contains(msgEvent.Text, b.selfMention) {
 			return
 		}
 		b.dispatch(msgEvent.Channel, msgEvent.User, msgEvent.Text, msgEvent.ThreadTimeStamp, msgEvent.TimeStamp, "thread_followup")

@@ -14,6 +14,9 @@ import (
 	"github.com/lokilens/lokilens/internal/errs"
 )
 
+// maxResponseBodySize limits Loki response reads to prevent OOM from oversized results.
+const maxResponseBodySize = 50 << 20 // 50 MB
+
 // Client defines the interface for querying a log backend.
 type Client interface {
 	QueryRange(ctx context.Context, req QueryRangeRequest) (*QueryResponse, error)
@@ -161,16 +164,18 @@ func (c *httpClient) get(ctx context.Context, path string, params url.Values, ou
 		u += "?" + params.Encode()
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
-	if err != nil {
-		return fmt.Errorf("creating request: %w", err)
+	makeReq := func() (*http.Request, error) {
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
+		if err != nil {
+			return nil, fmt.Errorf("creating request: %w", err)
+		}
+		if c.apiKey != "" {
+			req.Header.Set("Authorization", "Bearer "+c.apiKey)
+		}
+		return req, nil
 	}
 
-	if c.apiKey != "" {
-		req.Header.Set("Authorization", "Bearer "+c.apiKey)
-	}
-
-	resp, err := c.doWithRetry(ctx, req)
+	resp, err := c.doWithRetry(ctx, makeReq)
 	if err != nil {
 		return err
 	}
@@ -181,14 +186,19 @@ func (c *httpClient) get(ctx context.Context, path string, params url.Values, ou
 		return errs.NewLoki(resp.StatusCode, string(body), nil)
 	}
 
-	if err := json.NewDecoder(resp.Body).Decode(out); err != nil {
+	// Size-limit the response to prevent OOM from oversized Loki results.
+	limited := io.LimitReader(resp.Body, maxResponseBodySize)
+	if err := json.NewDecoder(limited).Decode(out); err != nil {
 		return fmt.Errorf("decoding response: %w", err)
 	}
 	return nil
 }
 
-func (c *httpClient) doWithRetry(ctx context.Context, req *http.Request) (*http.Response, error) {
+// doWithRetry executes HTTP requests with exponential backoff.
+// makeReq creates a fresh *http.Request for each attempt to avoid reusing consumed state.
+func (c *httpClient) doWithRetry(ctx context.Context, makeReq func() (*http.Request, error)) (*http.Response, error) {
 	var lastErr error
+	lastStatusCode := 0
 
 	for attempt := 0; attempt <= c.maxRetries; attempt++ {
 		if attempt > 0 {
@@ -201,6 +211,11 @@ func (c *httpClient) doWithRetry(ctx context.Context, req *http.Request) (*http.
 			}
 		}
 
+		req, err := makeReq()
+		if err != nil {
+			return nil, err
+		}
+
 		resp, err := c.httpClient.Do(req)
 		if err != nil {
 			lastErr = err
@@ -210,6 +225,7 @@ func (c *httpClient) doWithRetry(ctx context.Context, req *http.Request) (*http.
 		if resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode >= 500 {
 			body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 			resp.Body.Close()
+			lastStatusCode = resp.StatusCode
 			lastErr = fmt.Errorf("loki returned HTTP %d: %s", resp.StatusCode, string(body))
 			continue
 		}
@@ -217,5 +233,5 @@ func (c *httpClient) doWithRetry(ctx context.Context, req *http.Request) (*http.
 		return resp, nil
 	}
 
-	return nil, errs.NewLoki(0, fmt.Sprintf("request failed after %d attempts", c.maxRetries+1), lastErr)
+	return nil, errs.NewLoki(lastStatusCode, fmt.Sprintf("request failed after %d attempts", c.maxRetries+1), lastErr)
 }

@@ -89,7 +89,6 @@ func runSingleTenant(ctx context.Context, cfg *config.Config, logger *slog.Logge
 		BotToken:       cfg.SlackBotToken,
 		AppToken:       cfg.SlackAppToken,
 		Agent:          agent,
-		RateLimiter:    safety.NewRateLimiter(cfg.RateLimitPerUser, cfg.RateLimitBurst),
 		PIIFilter:      safety.NewPIIFilter(),
 		PromptGuard:    safety.NewPromptGuard(),
 		CircuitBreaker: safety.NewCircuitBreaker(5, 30*time.Second),
@@ -171,6 +170,7 @@ func runMultiTenant(ctx context.Context, cfg *config.Config, logger *slog.Logger
 		BaseURL:       cfg.BaseURL,
 		Store:         db,
 		Wizard:        wizard,
+		Manager:       mgr,
 		Logger:        logger,
 	})
 
@@ -259,8 +259,6 @@ func seedWorkspaceFromEnv(ctx context.Context, cfg *config.Config, db store.Work
 		LokiAPIKey:       cfg.LokiAPIKey,
 		GeminiAPIKey:     geminiKey,
 		DailyQueryLimit:  100,
-		RateLimitPerUser: cfg.RateLimitPerUser,
-		RateLimitBurst:   cfg.RateLimitBurst,
 		MaxTimeRange:     cfg.MaxTimeRange,
 		MaxResults:       cfg.MaxResults,
 		InstalledBy:      "env-seed",

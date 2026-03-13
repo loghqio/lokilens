@@ -16,7 +16,6 @@ type WorkspaceBundle struct {
 	Bot            *bot.Bot
 	Agent          *agentpkg.Agent
 	LokiClient    loki.Client
-	RateLimiter    *safety.RateLimiter
 	CircuitBreaker *safety.CircuitBreaker
 	Cancel         context.CancelFunc
 }

@@ -17,14 +17,15 @@ var relativeTimePattern = regexp.MustCompile(`^(\d+)\s*(s|sec|second|seconds|m|m
 // - RFC3339 → parsed directly
 // - Unix nanosecond timestamp → parsed as integer
 func ParseRelativeTime(input string) (time.Time, error) {
-	input = strings.TrimSpace(strings.ToLower(input))
+	input = strings.TrimSpace(input)
 
-	if input == "" || input == "now" {
+	if input == "" || strings.EqualFold(input, "now") {
 		return time.Now(), nil
 	}
 
-	// Try relative time: "2h ago", "30m", "1d ago"
-	if matches := relativeTimePattern.FindStringSubmatch(input); matches != nil {
+	// Try relative time: "2h ago", "30m", "1d ago" (case-insensitive)
+	lower := strings.ToLower(input)
+	if matches := relativeTimePattern.FindStringSubmatch(lower); matches != nil {
 		amount, _ := strconv.Atoi(matches[1])
 		unit := matches[2]
 		dur := toDuration(amount, unit)
@@ -32,7 +33,7 @@ func ParseRelativeTime(input string) (time.Time, error) {
 	}
 
 	// Try Go duration format: "2h30m", "45s"
-	if d, err := time.ParseDuration(input); err == nil {
+	if d, err := time.ParseDuration(lower); err == nil {
 		return time.Now().Add(-d), nil
 	}
 

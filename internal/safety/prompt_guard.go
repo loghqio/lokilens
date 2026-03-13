@@ -20,7 +20,8 @@ func NewPromptGuard() *PromptGuard {
 		`(?i)override\s+(your|previous|system|all)\s+`,
 
 		// System prompt extraction
-		`(?i)(reveal|show|output|print|display|dump|repeat|echo)\s+(your|the|system)\s+(prompt|instructions?|rules?|guidelines?)`,
+		`(?i)(reveal|show|output|print|display|dump|repeat|echo)\s+(.+\s+)?(your|the|my|system)\s+(system\s+)?(prompt|instructions?|rules?|guidelines?)`,
+		`(?i)(print|show|reveal|display|dump)\s+(your\s+)?(system\s+)?prompt`,
 		`(?i)what\s+(are|is)\s+your\s+(system\s+)?(prompt|instructions?|rules?)`,
 
 		// Role-play / persona hijacking

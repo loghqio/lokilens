@@ -3,9 +3,10 @@ module github.com/lokilens/lokilens
 go 1.25
 
 require (
+	github.com/keygen-sh/keygen-go/v3 v3.3.0
+	github.com/keygen-sh/machineid v1.1.2
 	github.com/lib/pq v1.11.2
 	github.com/slack-go/slack v0.18.0
-	golang.org/x/time v0.14.0
 	google.golang.org/adk v0.5.0
 	google.golang.org/genai v1.48.0
 )
@@ -30,8 +31,6 @@ require (
 	github.com/hashicorp/go-cleanhttp v0.5.1 // indirect
 	github.com/keygen-sh/go-update v1.0.0 // indirect
 	github.com/keygen-sh/jsonapi-go v1.2.1 // indirect
-	github.com/keygen-sh/keygen-go/v3 v3.3.0 // indirect
-	github.com/keygen-sh/machineid v1.1.2 // indirect
 	github.com/oasisprotocol/curve25519-voi v0.0.0-20211102120939-d5a936accd94 // indirect
 	go.opentelemetry.io/auto/sdk v1.2.1 // indirect
 	go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp v0.63.0 // indirect

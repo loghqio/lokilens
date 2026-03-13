@@ -82,7 +82,7 @@ func (s *PostgresStore) Migrate(ctx context.Context) error {
 func (s *PostgresStore) Get(ctx context.Context, workspaceID string) (*Workspace, error) {
 	row := s.db.QueryRowContext(ctx, `
 		SELECT workspace_id, team_name, bot_token_enc, loki_url, loki_api_key_enc,
-		       gemini_api_key_enc, daily_query_limit, rate_limit_per_user, rate_limit_burst,
+		       gemini_api_key_enc, daily_query_limit,
 		       max_time_range, max_results, installed_by, status, created_at, updated_at
 		FROM workspaces WHERE workspace_id = $1
 	`, workspaceID)
@@ -93,7 +93,7 @@ func (s *PostgresStore) Get(ctx context.Context, workspaceID string) (*Workspace
 func (s *PostgresStore) List(ctx context.Context, status WorkspaceStatus) ([]*Workspace, error) {
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT workspace_id, team_name, bot_token_enc, loki_url, loki_api_key_enc,
-		       gemini_api_key_enc, daily_query_limit, rate_limit_per_user, rate_limit_burst,
+		       gemini_api_key_enc, daily_query_limit,
 		       max_time_range, max_results, installed_by, status, created_at, updated_at
 		FROM workspaces WHERE status = $1
 		ORDER BY created_at
@@ -133,12 +133,12 @@ func (s *PostgresStore) Create(ctx context.Context, w *Workspace) error {
 	_, err = s.db.ExecContext(ctx, `
 		INSERT INTO workspaces (
 			workspace_id, team_name, bot_token_enc, loki_url, loki_api_key_enc,
-			gemini_api_key_enc, daily_query_limit, rate_limit_per_user, rate_limit_burst,
+			gemini_api_key_enc, daily_query_limit,
 			max_time_range, max_results, installed_by, status
-		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
 	`,
 		w.WorkspaceID, w.TeamName, botTokenEnc, w.LokiURL, lokiKeyEnc,
-		geminiKeyEnc, w.DailyQueryLimit, w.RateLimitPerUser, w.RateLimitBurst,
+		geminiKeyEnc, w.DailyQueryLimit,
 		w.MaxTimeRange.String(), w.MaxResults, w.InstalledBy, w.Status,
 	)
 	if err != nil {
@@ -166,13 +166,13 @@ func (s *PostgresStore) Update(ctx context.Context, w *Workspace) error {
 	_, err = s.db.ExecContext(ctx, `
 		UPDATE workspaces SET
 			team_name = $2, bot_token_enc = $3, loki_url = $4, loki_api_key_enc = $5,
-			gemini_api_key_enc = $6, daily_query_limit = $7, rate_limit_per_user = $8,
-			rate_limit_burst = $9, max_time_range = $10, max_results = $11,
-			installed_by = $12, status = $13, updated_at = now()
+			gemini_api_key_enc = $6, daily_query_limit = $7,
+			max_time_range = $8, max_results = $9,
+			installed_by = $10, status = $11, updated_at = now()
 		WHERE workspace_id = $1
 	`,
 		w.WorkspaceID, w.TeamName, botTokenEnc, w.LokiURL, lokiKeyEnc,
-		geminiKeyEnc, w.DailyQueryLimit, w.RateLimitPerUser, w.RateLimitBurst,
+		geminiKeyEnc, w.DailyQueryLimit,
 		w.MaxTimeRange.String(), w.MaxResults, w.InstalledBy, w.Status,
 	)
 	if err != nil {
@@ -191,16 +191,32 @@ func (s *PostgresStore) Delete(ctx context.Context, workspaceID string) error {
 
 func (s *PostgresStore) IncrementUsage(ctx context.Context, workspaceID string) (int, int, error) {
 	var count, limit int
+	// Conditional increment: only increments if the count is still under the limit.
+	// This prevents rejected queries from consuming usage slots.
 	err := s.db.QueryRowContext(ctx, `
-		WITH inc AS (
+		WITH current AS (
 			INSERT INTO daily_usage (workspace_id, usage_date, query_count)
-			VALUES ($1, CURRENT_DATE, 1)
-			ON CONFLICT (workspace_id, usage_date)
-			DO UPDATE SET query_count = daily_usage.query_count + 1
+			VALUES ($1, CURRENT_DATE, 0)
+			ON CONFLICT (workspace_id, usage_date) DO NOTHING
 			RETURNING query_count
+		),
+		maybe_inc AS (
+			UPDATE daily_usage du
+			SET query_count = du.query_count + 1
+			FROM workspaces w
+			WHERE du.workspace_id = $1
+			  AND du.usage_date = CURRENT_DATE
+			  AND w.workspace_id = $1
+			  AND du.query_count < w.daily_query_limit
+			RETURNING du.query_count
 		)
-		SELECT inc.query_count, w.daily_query_limit
-		FROM inc, workspaces w
+		SELECT
+			COALESCE(
+				(SELECT query_count FROM maybe_inc),
+				(SELECT du.query_count FROM daily_usage du WHERE du.workspace_id = $1 AND du.usage_date = CURRENT_DATE)
+			),
+			w.daily_query_limit
+		FROM workspaces w
 		WHERE w.workspace_id = $1
 	`, workspaceID).Scan(&count, &limit)
 	if err != nil {
@@ -241,7 +257,7 @@ func (s *PostgresStore) scanWorkspace(row *sql.Row) (*Workspace, error) {
 
 	err := row.Scan(
 		&w.WorkspaceID, &w.TeamName, &botTokenEnc, &w.LokiURL, &lokiKeyEnc,
-		&geminiKeyEnc, &w.DailyQueryLimit, &w.RateLimitPerUser, &w.RateLimitBurst,
+		&geminiKeyEnc, &w.DailyQueryLimit,
 		&maxTimeRangeS, &w.MaxResults, &w.InstalledBy, &status, &w.CreatedAt, &w.UpdatedAt,
 	)
 	if err != nil {
@@ -286,7 +302,7 @@ func (s *PostgresStore) scanWorkspaceRows(rows *sql.Rows) (*Workspace, error) {
 
 	err := rows.Scan(
 		&w.WorkspaceID, &w.TeamName, &botTokenEnc, &w.LokiURL, &lokiKeyEnc,
-		&geminiKeyEnc, &w.DailyQueryLimit, &w.RateLimitPerUser, &w.RateLimitBurst,
+		&geminiKeyEnc, &w.DailyQueryLimit,
 		&maxTimeRangeS, &w.MaxResults, &w.InstalledBy, &status, &w.CreatedAt, &w.UpdatedAt,
 	)
 	if err != nil {

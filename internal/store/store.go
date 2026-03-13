@@ -23,9 +23,7 @@ type Workspace struct {
 	LokiAPIKey       string          // decrypted, "" = no auth
 	GeminiAPIKey     string          // decrypted, "" = use shared key
 	DailyQueryLimit  int
-	RateLimitPerUser int
-	RateLimitBurst   int
-	MaxTimeRange     time.Duration
+	MaxTimeRange time.Duration
 	MaxResults       int
 	InstalledBy      string
 	Status           WorkspaceStatus
