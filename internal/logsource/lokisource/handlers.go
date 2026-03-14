@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"strings"
 	"time"
 
 	"github.com/lokilens/lokilens/internal/agent"
@@ -86,7 +87,7 @@ func (h *ToolHandlers) QueryLogs(ctx context.Context, input QueryLogsInput) (age
 	}
 
 	var warning string
-	startTime, warning = h.clampTimeRange(startTime, endTime)
+	startTime, endTime, warning = h.clampTimeRange(startTime, endTime)
 
 	limit := clamp(input.Limit, 1, h.validator.MaxResults())
 	if input.Limit == 0 {
@@ -218,7 +219,7 @@ func (h *ToolHandlers) QueryStats(ctx context.Context, input QueryStatsInput) (a
 	}
 
 	var warning string
-	startTime, warning = h.clampTimeRange(startTime, endTime)
+	startTime, endTime, warning = h.clampTimeRange(startTime, endTime)
 
 	step := input.Step
 	if step == "" {
@@ -252,13 +253,35 @@ func (h *ToolHandlers) QueryStats(ctx context.Context, input QueryStatsInput) (a
 	return out, nil
 }
 
-func (h *ToolHandlers) clampTimeRange(start, end time.Time) (time.Time, string) {
+func (h *ToolHandlers) clampTimeRange(start, end time.Time) (time.Time, time.Time, string) {
 	maxRange := h.validator.MaxTimeRange()
-	if end.Sub(start) > maxRange {
-		clamped := end.Add(-maxRange)
-		return clamped, fmt.Sprintf("Requested time range was too large — clamped to the last %s. Maximum allowed range is %s.", maxRange, maxRange)
+	var warnings []string
+
+	// Swap if reversed
+	if end.Before(start) {
+		start, end = end, start
+		warnings = append(warnings, "start/end times were swapped")
 	}
-	return start, ""
+
+	// Cap future end times
+	now := time.Now()
+	if end.After(now) {
+		end = now
+	}
+
+	// Clamp to max range
+	if end.Sub(start) > maxRange {
+		start = end.Add(-maxRange)
+		warnings = append(warnings, fmt.Sprintf("time range clamped to %s (maximum allowed)", maxRange))
+	}
+
+	// Ensure non-zero range
+	if !end.After(start) {
+		start = end.Add(-1 * time.Hour)
+		warnings = append(warnings, "defaulted to 1h time range")
+	}
+
+	return start, end, strings.Join(warnings, "; ")
 }
 
 func clamp(val, min, max int) int {

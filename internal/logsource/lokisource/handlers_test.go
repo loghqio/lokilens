@@ -85,8 +85,8 @@ func TestClampTimeRange_WithinLimit(t *testing.T) {
 	now := time.Now()
 	start := now.Add(-2 * time.Hour)
 
-	clamped, warning := h.clampTimeRange(start, now)
-	if !clamped.Equal(start) {
+	clampedStart, _, warning := h.clampTimeRange(start, now)
+	if !clampedStart.Equal(start) {
 		t.Errorf("expected no clamping, but start was adjusted")
 	}
 	if warning != "" {
@@ -100,10 +100,10 @@ func TestClampTimeRange_ExceedsLimit(t *testing.T) {
 	now := time.Now()
 	start := now.Add(-7120 * time.Hour)
 
-	clamped, warning := h.clampTimeRange(start, now)
+	clampedStart, _, warning := h.clampTimeRange(start, now)
 	expectedStart := now.Add(-24 * time.Hour)
-	if clamped.Sub(expectedStart).Abs() > time.Second {
-		t.Errorf("expected start clamped to 24h ago, got %v ago", now.Sub(clamped))
+	if clampedStart.Sub(expectedStart).Abs() > time.Second {
+		t.Errorf("expected start clamped to 24h ago, got %v ago", now.Sub(clampedStart))
 	}
 	if warning == "" {
 		t.Error("expected warning about clamped time range")
@@ -119,12 +119,28 @@ func TestClampTimeRange_ExactlyAtLimit(t *testing.T) {
 	now := time.Now()
 	start := now.Add(-24 * time.Hour)
 
-	clamped, warning := h.clampTimeRange(start, now)
-	if !clamped.Equal(start) {
+	clampedStart, _, warning := h.clampTimeRange(start, now)
+	if !clampedStart.Equal(start) {
 		t.Errorf("expected no clamping at exact limit")
 	}
 	if warning != "" {
 		t.Errorf("expected no warning at exact limit, got %q", warning)
+	}
+}
+
+func TestClampTimeRange_SwappedTimes(t *testing.T) {
+	v := safety.NewValidator(24*time.Hour, 500)
+	h := NewToolHandlers(nil, v, nil)
+	now := time.Now()
+	past := now.Add(-1 * time.Hour)
+
+	// Pass end before start (swapped)
+	s, e, warning := h.clampTimeRange(now, past)
+	if !e.After(s) {
+		t.Error("expected end after start after swap")
+	}
+	if !strings.Contains(warning, "swapped") {
+		t.Errorf("expected 'swapped' in warning, got %q", warning)
 	}
 }
 
