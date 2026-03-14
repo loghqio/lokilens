@@ -19,6 +19,9 @@ import (
 	"github.com/lokilens/lokilens/internal/config"
 	"github.com/lokilens/lokilens/internal/health"
 	"github.com/lokilens/lokilens/internal/loki"
+	"github.com/lokilens/lokilens/internal/logsource"
+	"github.com/lokilens/lokilens/internal/logsource/cwsource"
+	"github.com/lokilens/lokilens/internal/logsource/lokisource"
 	"github.com/lokilens/lokilens/internal/manager"
 	"github.com/lokilens/lokilens/internal/oauth"
 	"github.com/lokilens/lokilens/internal/safety"
@@ -54,34 +57,65 @@ func main() {
 func runSingleTenant(ctx context.Context, cfg *config.Config, logger *slog.Logger) {
 	logger.Info("LokiLens starting (single-tenant)",
 		"gemini_model", cfg.GeminiModel,
-		"loki_url", cfg.LokiBaseURL,
+		"log_backend", cfg.LogBackend,
+		"vertex_ai", cfg.UseVertexAI(),
 	)
-
-	// Loki client
-	lokiClient := loki.NewHTTPClient(loki.ClientConfig{
-		BaseURL:    cfg.LokiBaseURL,
-		APIKey:     cfg.LokiAPIKey,
-		Timeout:    cfg.LokiTimeout,
-		MaxRetries: cfg.LokiMaxRetries,
-		Logger:     logger,
-	})
 
 	// Audit logger
 	auditLogger := audit.New(logger)
 
+	// Build log source based on backend
+	var source logsource.LogSource
+	var lokiClient loki.Client // may be nil for non-Loki backends
+
+	if cfg.IsCloudWatch() {
+		var logGroups []string
+		if cfg.CWLogGroups != "" {
+			for _, g := range strings.Split(cfg.CWLogGroups, ",") {
+				g = strings.TrimSpace(g)
+				if g != "" {
+					logGroups = append(logGroups, g)
+				}
+			}
+		}
+		cwSource, err := cwsource.New(ctx, cwsource.Config{
+			Region:    cfg.AWSRegion,
+			LogGroups: logGroups,
+			Audit:     auditLogger,
+		})
+		if err != nil {
+			logger.Error("failed to create cloudwatch source", "error", err)
+			os.Exit(1)
+		}
+		source = cwSource
+	} else {
+		lokiClient = loki.NewHTTPClient(loki.ClientConfig{
+			BaseURL:    cfg.LokiBaseURL,
+			APIKey:     cfg.LokiAPIKey,
+			Timeout:    cfg.LokiTimeout,
+			MaxRetries: cfg.LokiMaxRetries,
+			Logger:     logger,
+		})
+		validator := safety.NewValidator(cfg.MaxTimeRange, cfg.MaxResults)
+		source = lokisource.New(lokiClient, validator, auditLogger)
+	}
+
 	// ADK agent
-	agent, err := agentpkg.New(ctx, cfg, lokiClient, auditLogger, logger)
+	agent, err := agentpkg.New(ctx, cfg, source, auditLogger, logger)
 	if err != nil {
 		logger.Error("failed to create agent", "error", err)
 		os.Exit(1)
 	}
 
 	// Health server for Kubernetes probes
-	healthSrv := health.New(health.Config{
-		Addr:       cfg.HealthAddr,
-		LokiClient: lokiClient,
-		Logger:     logger,
-	})
+	healthCfg := health.Config{
+		Addr:   cfg.HealthAddr,
+		Logger: logger,
+	}
+	if lokiClient != nil {
+		healthCfg.LokiClient = lokiClient
+	}
+	healthSrv := health.New(healthCfg)
 	go healthSrv.Run(ctx)
 
 	// Slack bot
@@ -154,6 +188,8 @@ func runMultiTenant(ctx context.Context, cfg *config.Config, logger *slog.Logger
 		SharedGeminiKey: sharedKey,
 		AppToken:        cfg.SlackAppToken,
 		GeminiModel:     cfg.GeminiModel,
+		GCPProject:      cfg.GCPProject,
+		GCPLocation:     cfg.GCPLocation,
 		AuditLogger:     auditLogger,
 		Logger:          logger,
 	})

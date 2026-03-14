@@ -33,11 +33,20 @@ func TestValidateQuery_ValidQuery(t *testing.T) {
 	}
 }
 
-func TestValidateQuery_TimeRangeExceeded(t *testing.T) {
+func TestValidateQuery_LargeTimeRange_NoError(t *testing.T) {
+	// Time range clamping is handled by tool handlers, not the validator.
+	// The validator only checks format and ordering.
 	v := NewValidator(24*time.Hour, 500)
 	err := v.ValidateQuery(`{service="payments"}`, "48h ago", "now")
-	if err == nil {
-		t.Error("expected error for exceeded time range")
+	if err != nil {
+		t.Errorf("validator should not reject large time ranges (clamping is in tools): %v", err)
+	}
+}
+
+func TestMaxTimeRange(t *testing.T) {
+	v := NewValidator(24*time.Hour, 500)
+	if v.MaxTimeRange() != 24*time.Hour {
+		t.Errorf("expected 24h, got %v", v.MaxTimeRange())
 	}
 }
 

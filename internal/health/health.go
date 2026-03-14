@@ -146,6 +146,11 @@ func (s *Server) checkLokiLoop(ctx context.Context) {
 }
 
 func (s *Server) checkLoki(ctx context.Context) {
+	if s.lokiClient == nil {
+		s.lokiHealthy.Store(true) // no Loki backend to check
+		return
+	}
+
 	checkCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 

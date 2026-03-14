@@ -5,7 +5,7 @@ import (
 
 	agentpkg "github.com/lokilens/lokilens/internal/agent"
 	"github.com/lokilens/lokilens/internal/bot"
-	"github.com/lokilens/lokilens/internal/loki"
+	"github.com/lokilens/lokilens/internal/logsource"
 	"github.com/lokilens/lokilens/internal/safety"
 	"github.com/lokilens/lokilens/internal/store"
 )
@@ -15,7 +15,7 @@ type WorkspaceBundle struct {
 	Workspace      *store.Workspace
 	Bot            *bot.Bot
 	Agent          *agentpkg.Agent
-	LokiClient    loki.Client
+	LogSource      logsource.LogSource
 	CircuitBreaker *safety.CircuitBreaker
 	Cancel         context.CancelFunc
 }

@@ -19,8 +19,11 @@ type Workspace struct {
 	WorkspaceID      string
 	TeamName         string
 	BotToken         string // decrypted
+	LogBackend       string // "loki" (default), "cloudwatch", etc.
 	LokiURL          string
-	LokiAPIKey       string          // decrypted, "" = no auth
+	LokiAPIKey       string // decrypted, "" = no auth
+	AWSRegion        string // CloudWatch: AWS region
+	CWLogGroups      string // CloudWatch: comma-separated log group names
 	GeminiAPIKey     string          // decrypted, "" = use shared key
 	DailyQueryLimit  int
 	MaxTimeRange time.Duration

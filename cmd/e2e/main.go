@@ -15,6 +15,10 @@ import (
 	"github.com/lokilens/lokilens/internal/audit"
 	"github.com/lokilens/lokilens/internal/config"
 	"github.com/lokilens/lokilens/internal/loki"
+	"github.com/lokilens/lokilens/internal/logsource"
+	"github.com/lokilens/lokilens/internal/logsource/cwsource"
+	"github.com/lokilens/lokilens/internal/logsource/lokisource"
+	"github.com/lokilens/lokilens/internal/safety"
 )
 
 type Scenario struct {
@@ -74,24 +78,49 @@ func main() {
 		Level: slog.LevelWarn,
 	}))
 
-	lokiClient := loki.NewHTTPClient(loki.ClientConfig{
-		BaseURL:    cfg.LokiBaseURL,
-		APIKey:     cfg.LokiAPIKey,
-		Timeout:    cfg.LokiTimeout,
-		MaxRetries: cfg.LokiMaxRetries,
-		Logger:     logger,
-	})
-
 	auditLogger := audit.New(logger)
 
-	agent, err := agentpkg.New(ctx, cfg, lokiClient, auditLogger, logger)
+	var source logsource.LogSource
+	if cfg.IsCloudWatch() {
+		var logGroups []string
+		if cfg.CWLogGroups != "" {
+			for _, g := range strings.Split(cfg.CWLogGroups, ",") {
+				g = strings.TrimSpace(g)
+				if g != "" {
+					logGroups = append(logGroups, g)
+				}
+			}
+		}
+		cwSource, err := cwsource.New(ctx, cwsource.Config{
+			Region:    cfg.AWSRegion,
+			LogGroups: logGroups,
+			Audit:     auditLogger,
+		})
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "cloudwatch init error: %v\n", err)
+			os.Exit(1)
+		}
+		source = cwSource
+	} else {
+		lokiClient := loki.NewHTTPClient(loki.ClientConfig{
+			BaseURL:    cfg.LokiBaseURL,
+			APIKey:     cfg.LokiAPIKey,
+			Timeout:    cfg.LokiTimeout,
+			MaxRetries: cfg.LokiMaxRetries,
+			Logger:     logger,
+		})
+		validator := safety.NewValidator(cfg.MaxTimeRange, cfg.MaxResults)
+		source = lokisource.New(lokiClient, validator, auditLogger)
+	}
+
+	agent, err := agentpkg.New(ctx, cfg, source, auditLogger, logger)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "agent init error: %v\n", err)
 		os.Exit(1)
 	}
 
 	fmt.Printf("LokiLens E2E — %d scenarios from %s\n", len(suite.Scenarios), suiteFile)
-	fmt.Printf("Model: %s | Loki: %s\n", cfg.GeminiModel, cfg.LokiBaseURL)
+	fmt.Printf("Model: %s | Backend: %s\n", cfg.GeminiModel, source.Name())
 	fmt.Println(strings.Repeat("=", 70))
 
 	var results []Result

@@ -44,7 +44,7 @@ func (v *Validator) ValidateQuery(logql, startTime, endTime string) error {
 		return fmt.Errorf("empty stream selector {} is not allowed — specify at least one label")
 	}
 
-	// Enforce time range
+	// Validate time format (time range clamping is handled by tool handlers)
 	if startTime != "" {
 		start, err := lokipkg.ParseRelativeTime(startTime)
 		if err != nil {
@@ -57,11 +57,7 @@ func (v *Validator) ValidateQuery(logql, startTime, endTime string) error {
 				return fmt.Errorf("invalid end time: %w", err)
 			}
 		}
-		duration := end.Sub(start)
-		if duration > v.maxTimeRange {
-			return fmt.Errorf("time range %v exceeds maximum allowed %v", duration.Round(time.Minute), v.maxTimeRange)
-		}
-		if duration < 0 {
+		if end.Sub(start) < 0 {
 			return fmt.Errorf("start time must be before end time")
 		}
 	}
@@ -77,4 +73,9 @@ func (v *Validator) ValidateQuery(logql, startTime, endTime string) error {
 // MaxResults returns the configured maximum result limit.
 func (v *Validator) MaxResults() int {
 	return v.maxResults
+}
+
+// MaxTimeRange returns the configured maximum query time range.
+func (v *Validator) MaxTimeRange() time.Duration {
+	return v.maxTimeRange
 }

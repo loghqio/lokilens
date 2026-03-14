@@ -47,8 +47,11 @@ func (s *PostgresStore) Migrate(ctx context.Context) error {
 		workspace_id       TEXT PRIMARY KEY,
 		team_name          TEXT NOT NULL DEFAULT '',
 		bot_token_enc      BYTEA NOT NULL,
+		log_backend        TEXT NOT NULL DEFAULT 'loki',
 		loki_url           TEXT NOT NULL DEFAULT '',
 		loki_api_key_enc   BYTEA,
+		aws_region         TEXT NOT NULL DEFAULT '',
+		cw_log_groups      TEXT NOT NULL DEFAULT '',
 		gemini_api_key_enc BYTEA,
 		daily_query_limit    INT NOT NULL DEFAULT 100,
 		rate_limit_per_user  INT NOT NULL DEFAULT 20,
@@ -60,6 +63,11 @@ func (s *PostgresStore) Migrate(ctx context.Context) error {
 		created_at         TIMESTAMPTZ NOT NULL DEFAULT now(),
 		updated_at         TIMESTAMPTZ NOT NULL DEFAULT now()
 	);
+
+	-- Migration: add columns for multi-backend support
+	ALTER TABLE workspaces ADD COLUMN IF NOT EXISTS log_backend TEXT NOT NULL DEFAULT 'loki';
+	ALTER TABLE workspaces ADD COLUMN IF NOT EXISTS aws_region TEXT NOT NULL DEFAULT '';
+	ALTER TABLE workspaces ADD COLUMN IF NOT EXISTS cw_log_groups TEXT NOT NULL DEFAULT '';
 
 	CREATE TABLE IF NOT EXISTS daily_usage (
 		workspace_id  TEXT NOT NULL REFERENCES workspaces(workspace_id) ON DELETE CASCADE,
@@ -81,7 +89,8 @@ func (s *PostgresStore) Migrate(ctx context.Context) error {
 
 func (s *PostgresStore) Get(ctx context.Context, workspaceID string) (*Workspace, error) {
 	row := s.db.QueryRowContext(ctx, `
-		SELECT workspace_id, team_name, bot_token_enc, loki_url, loki_api_key_enc,
+		SELECT workspace_id, team_name, bot_token_enc, log_backend,
+		       loki_url, loki_api_key_enc, aws_region, cw_log_groups,
 		       gemini_api_key_enc, daily_query_limit,
 		       max_time_range, max_results, installed_by, status, created_at, updated_at
 		FROM workspaces WHERE workspace_id = $1
@@ -92,7 +101,8 @@ func (s *PostgresStore) Get(ctx context.Context, workspaceID string) (*Workspace
 
 func (s *PostgresStore) List(ctx context.Context, status WorkspaceStatus) ([]*Workspace, error) {
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT workspace_id, team_name, bot_token_enc, loki_url, loki_api_key_enc,
+		SELECT workspace_id, team_name, bot_token_enc, log_backend,
+		       loki_url, loki_api_key_enc, aws_region, cw_log_groups,
 		       gemini_api_key_enc, daily_query_limit,
 		       max_time_range, max_results, installed_by, status, created_at, updated_at
 		FROM workspaces WHERE status = $1
@@ -130,14 +140,21 @@ func (s *PostgresStore) Create(ctx context.Context, w *Workspace) error {
 		return fmt.Errorf("encrypting gemini key: %w", err)
 	}
 
+	logBackend := w.LogBackend
+	if logBackend == "" {
+		logBackend = "loki"
+	}
+
 	_, err = s.db.ExecContext(ctx, `
 		INSERT INTO workspaces (
-			workspace_id, team_name, bot_token_enc, loki_url, loki_api_key_enc,
+			workspace_id, team_name, bot_token_enc, log_backend,
+			loki_url, loki_api_key_enc, aws_region, cw_log_groups,
 			gemini_api_key_enc, daily_query_limit,
 			max_time_range, max_results, installed_by, status
-		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
 	`,
-		w.WorkspaceID, w.TeamName, botTokenEnc, w.LokiURL, lokiKeyEnc,
+		w.WorkspaceID, w.TeamName, botTokenEnc, logBackend,
+		w.LokiURL, lokiKeyEnc, w.AWSRegion, w.CWLogGroups,
 		geminiKeyEnc, w.DailyQueryLimit,
 		w.MaxTimeRange.String(), w.MaxResults, w.InstalledBy, w.Status,
 	)
@@ -163,15 +180,22 @@ func (s *PostgresStore) Update(ctx context.Context, w *Workspace) error {
 		return fmt.Errorf("encrypting gemini key: %w", err)
 	}
 
+	logBackend := w.LogBackend
+	if logBackend == "" {
+		logBackend = "loki"
+	}
+
 	_, err = s.db.ExecContext(ctx, `
 		UPDATE workspaces SET
-			team_name = $2, bot_token_enc = $3, loki_url = $4, loki_api_key_enc = $5,
-			gemini_api_key_enc = $6, daily_query_limit = $7,
-			max_time_range = $8, max_results = $9,
-			installed_by = $10, status = $11, updated_at = now()
+			team_name = $2, bot_token_enc = $3, log_backend = $4,
+			loki_url = $5, loki_api_key_enc = $6, aws_region = $7, cw_log_groups = $8,
+			gemini_api_key_enc = $9, daily_query_limit = $10,
+			max_time_range = $11, max_results = $12,
+			installed_by = $13, status = $14, updated_at = now()
 		WHERE workspace_id = $1
 	`,
-		w.WorkspaceID, w.TeamName, botTokenEnc, w.LokiURL, lokiKeyEnc,
+		w.WorkspaceID, w.TeamName, botTokenEnc, logBackend,
+		w.LokiURL, lokiKeyEnc, w.AWSRegion, w.CWLogGroups,
 		geminiKeyEnc, w.DailyQueryLimit,
 		w.MaxTimeRange.String(), w.MaxResults, w.InstalledBy, w.Status,
 	)
@@ -256,7 +280,8 @@ func (s *PostgresStore) scanWorkspace(row *sql.Row) (*Workspace, error) {
 	)
 
 	err := row.Scan(
-		&w.WorkspaceID, &w.TeamName, &botTokenEnc, &w.LokiURL, &lokiKeyEnc,
+		&w.WorkspaceID, &w.TeamName, &botTokenEnc, &w.LogBackend,
+		&w.LokiURL, &lokiKeyEnc, &w.AWSRegion, &w.CWLogGroups,
 		&geminiKeyEnc, &w.DailyQueryLimit,
 		&maxTimeRangeS, &w.MaxResults, &w.InstalledBy, &status, &w.CreatedAt, &w.UpdatedAt,
 	)
@@ -301,7 +326,8 @@ func (s *PostgresStore) scanWorkspaceRows(rows *sql.Rows) (*Workspace, error) {
 	)
 
 	err := rows.Scan(
-		&w.WorkspaceID, &w.TeamName, &botTokenEnc, &w.LokiURL, &lokiKeyEnc,
+		&w.WorkspaceID, &w.TeamName, &botTokenEnc, &w.LogBackend,
+		&w.LokiURL, &lokiKeyEnc, &w.AWSRegion, &w.CWLogGroups,
 		&geminiKeyEnc, &w.DailyQueryLimit,
 		&maxTimeRangeS, &w.MaxResults, &w.InstalledBy, &status, &w.CreatedAt, &w.UpdatedAt,
 	)

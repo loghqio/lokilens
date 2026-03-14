@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 	"sync"
 	"time"
 
@@ -13,6 +14,9 @@ import (
 	"github.com/lokilens/lokilens/internal/bot"
 	"github.com/lokilens/lokilens/internal/config"
 	"github.com/lokilens/lokilens/internal/loki"
+	"github.com/lokilens/lokilens/internal/logsource"
+	"github.com/lokilens/lokilens/internal/logsource/cwsource"
+	"github.com/lokilens/lokilens/internal/logsource/lokisource"
 	"github.com/lokilens/lokilens/internal/safety"
 	"github.com/lokilens/lokilens/internal/store"
 )
@@ -23,6 +27,8 @@ type BotManager struct {
 	sharedGeminiKey string
 	appToken        string // single SLACK_APP_TOKEN (app-level, shared across workspaces)
 	geminiModel     string
+	gcpProject      string
+	gcpLocation     string
 	auditLogger     *audit.Logger
 	logger          *slog.Logger
 
@@ -36,6 +42,8 @@ type ManagerConfig struct {
 	SharedGeminiKey string
 	AppToken        string
 	GeminiModel     string
+	GCPProject      string
+	GCPLocation     string
 	AuditLogger     *audit.Logger
 	Logger          *slog.Logger
 }
@@ -47,6 +55,8 @@ func New(cfg ManagerConfig) *BotManager {
 		sharedGeminiKey: cfg.SharedGeminiKey,
 		appToken:        cfg.AppToken,
 		geminiModel:     cfg.GeminiModel,
+		gcpProject:      cfg.GCPProject,
+		gcpLocation:     cfg.GCPLocation,
 		auditLogger:     cfg.AuditLogger,
 		logger:          cfg.Logger,
 		bundles:         make(map[string]*WorkspaceBundle),
@@ -139,32 +149,30 @@ func (m *BotManager) startBundle(ctx context.Context, ws *store.Workspace) error
 
 	wsLogger := m.logger.With("workspace", ws.WorkspaceID)
 
-	// Loki client
-	lokiClient := loki.NewHTTPClient(loki.ClientConfig{
-		BaseURL:    ws.LokiURL,
-		APIKey:     ws.LokiAPIKey,
-		Timeout:    30 * time.Second,
-		MaxRetries: 2,
-		Logger:     wsLogger,
-	})
-
-	// Determine Gemini key
-	geminiKey := ws.GeminiAPIKey
-	if geminiKey == "" {
-		geminiKey = m.sharedGeminiKey
+	// Build log source plugin based on workspace backend
+	source, err := buildLogSource(ctx, ws, m.auditLogger, wsLogger)
+	if err != nil {
+		return fmt.Errorf("building log source for workspace %s: %w", ws.WorkspaceID, err)
 	}
 
-	// Agent
+	// Determine Gemini backend: workspace-specific API key, or platform's Vertex AI / shared key
 	agentCfg := &config.Config{
-		GeminiAPIKey: geminiKey,
 		GeminiModel:  m.geminiModel,
 		MaxTimeRange: ws.MaxTimeRange,
 		MaxResults:   ws.MaxResults,
 	}
+	if ws.GeminiAPIKey != "" {
+		agentCfg.GeminiAPIKey = ws.GeminiAPIKey
+	} else if m.gcpProject != "" {
+		agentCfg.GCPProject = m.gcpProject
+		agentCfg.GCPLocation = m.gcpLocation
+	} else {
+		agentCfg.GeminiAPIKey = m.sharedGeminiKey
+	}
 
 	agentCtx, agentCancel := context.WithCancel(ctx)
 
-	agent, err := agentpkg.New(agentCtx, agentCfg, lokiClient, m.auditLogger, wsLogger)
+	agent, err := agentpkg.New(agentCtx, agentCfg, source, m.auditLogger, wsLogger)
 	if err != nil {
 		agentCancel()
 		return fmt.Errorf("creating agent for workspace %s: %w", ws.WorkspaceID, err)
@@ -208,7 +216,7 @@ func (m *BotManager) startBundle(ctx context.Context, ws *store.Workspace) error
 		Workspace:      ws,
 		Bot:            slackBot,
 		Agent:          agent,
-		LokiClient:    lokiClient,
+		LogSource:      source,
 		CircuitBreaker: cb,
 		Cancel:         agentCancel,
 	}
@@ -224,6 +232,42 @@ func (m *BotManager) startBundle(ctx context.Context, ws *store.Workspace) error
 	}()
 
 	return nil
+}
+
+// buildLogSource creates the appropriate LogSource plugin for a workspace.
+func buildLogSource(ctx context.Context, ws *store.Workspace, auditLogger *audit.Logger, logger *slog.Logger) (logsource.LogSource, error) {
+	switch strings.ToLower(ws.LogBackend) {
+	case "cloudwatch":
+		var logGroups []string
+		if ws.CWLogGroups != "" {
+			for _, g := range strings.Split(ws.CWLogGroups, ",") {
+				g = strings.TrimSpace(g)
+				if g != "" {
+					logGroups = append(logGroups, g)
+				}
+			}
+		}
+		source, err := cwsource.New(ctx, cwsource.Config{
+			Region:    ws.AWSRegion,
+			LogGroups: logGroups,
+			Audit:     auditLogger,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("creating cloudwatch source: %w", err)
+		}
+		return source, nil
+	default:
+		// Default to Loki
+		lokiClient := loki.NewHTTPClient(loki.ClientConfig{
+			BaseURL:    ws.LokiURL,
+			APIKey:     ws.LokiAPIKey,
+			Timeout:    30 * time.Second,
+			MaxRetries: 2,
+			Logger:     logger,
+		})
+		validator := safety.NewValidator(ws.MaxTimeRange, ws.MaxResults)
+		return lokisource.New(lokiClient, validator, auditLogger), nil
+	}
 }
 
 func (m *BotManager) cleanupUsageLoop(ctx context.Context) {

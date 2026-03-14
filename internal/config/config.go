@@ -16,12 +16,21 @@ type Config struct {
 	// Gemini / ADK
 	GeminiAPIKey string
 	GeminiModel  string
+	GCPProject   string // Vertex AI project (if set, uses Vertex AI instead of Gemini API)
+	GCPLocation  string // Vertex AI location (default: us-central1)
+
+	// Log Backend
+	LogBackend string // "loki" (default) or "cloudwatch"
 
 	// Loki
 	LokiBaseURL    string
 	LokiAPIKey     string
 	LokiTimeout    time.Duration
 	LokiMaxRetries int
+
+	// CloudWatch
+	AWSRegion   string
+	CWLogGroups string
 
 	// Safety
 	MaxTimeRange time.Duration
@@ -54,10 +63,15 @@ func Load() (*Config, error) {
 		SlackAppToken:  os.Getenv("SLACK_APP_TOKEN"),
 		GeminiAPIKey:   os.Getenv("GEMINI_API_KEY"),
 		GeminiModel:    envOrDefault("GEMINI_MODEL", "gemini-3.1-flash-lite-preview"),
+		GCPProject:     os.Getenv("GCP_PROJECT"),
+		GCPLocation:    envOrDefault("GCP_LOCATION", "us-central1"),
+		LogBackend:     envOrDefault("LOG_BACKEND", "loki"),
 		LokiBaseURL:    os.Getenv("LOKI_BASE_URL"),
 		LokiAPIKey:     os.Getenv("LOKI_API_KEY"),
 		LokiTimeout:    envDuration("LOKI_TIMEOUT", 30*time.Second),
 		LokiMaxRetries: envInt("LOKI_MAX_RETRIES", 2),
+		AWSRegion:      os.Getenv("AWS_REGION"),
+		CWLogGroups:    os.Getenv("CW_LOG_GROUPS"),
 		MaxTimeRange:   envDuration("MAX_TIME_RANGE", 24*time.Hour),
 		MaxResults:     envInt("MAX_RESULTS", 500),
 		HealthAddr:       envOrDefault("HEALTH_ADDR", ":8080"),
@@ -88,21 +102,29 @@ func LoadAgent() (*Config, error) {
 	cfg := &Config{
 		GeminiAPIKey:   os.Getenv("GEMINI_API_KEY"),
 		GeminiModel:    envOrDefault("GEMINI_MODEL", "gemini-3.1-flash-lite-preview"),
+		GCPProject:     os.Getenv("GCP_PROJECT"),
+		GCPLocation:    envOrDefault("GCP_LOCATION", "us-central1"),
+		LogBackend:     envOrDefault("LOG_BACKEND", "loki"),
 		LokiBaseURL:    os.Getenv("LOKI_BASE_URL"),
 		LokiAPIKey:     os.Getenv("LOKI_API_KEY"),
 		LokiTimeout:    envDuration("LOKI_TIMEOUT", 30*time.Second),
 		LokiMaxRetries: envInt("LOKI_MAX_RETRIES", 2),
+		AWSRegion:      os.Getenv("AWS_REGION"),
+		CWLogGroups:    os.Getenv("CW_LOG_GROUPS"),
 		MaxTimeRange:   envDuration("MAX_TIME_RANGE", 24*time.Hour),
 		MaxResults:     envInt("MAX_RESULTS", 500),
 		LogLevel:       envOrDefault("LOG_LEVEL", "info"),
 	}
 
 	var missing []string
-	if cfg.GeminiAPIKey == "" {
-		missing = append(missing, "GEMINI_API_KEY")
+	if cfg.GeminiAPIKey == "" && cfg.GCPProject == "" {
+		missing = append(missing, "GEMINI_API_KEY or GCP_PROJECT")
 	}
-	if cfg.LokiBaseURL == "" {
+	if cfg.IsLoki() && cfg.LokiBaseURL == "" {
 		missing = append(missing, "LOKI_BASE_URL")
+	}
+	if cfg.IsCloudWatch() && cfg.AWSRegion == "" {
+		missing = append(missing, "AWS_REGION")
 	}
 	if len(missing) > 0 {
 		return nil, fmt.Errorf("missing required environment variables: %s", strings.Join(missing, ", "))
@@ -111,9 +133,24 @@ func LoadAgent() (*Config, error) {
 	return cfg, nil
 }
 
+// UseVertexAI returns true if Vertex AI should be used instead of Gemini API.
+func (c *Config) UseVertexAI() bool {
+	return c.GCPProject != ""
+}
+
 // MultiTenant returns true if the app is configured for multi-tenant mode.
 func (c *Config) MultiTenant() bool {
 	return c.DatabaseURL != ""
+}
+
+// IsCloudWatch returns true if the configured log backend is CloudWatch.
+func (c *Config) IsCloudWatch() bool {
+	return strings.ToLower(c.LogBackend) == "cloudwatch"
+}
+
+// IsLoki returns true if the configured log backend is Loki (or default).
+func (c *Config) IsLoki() bool {
+	return !c.IsCloudWatch()
 }
 
 func (c *Config) validate() error {
@@ -131,11 +168,14 @@ func (c *Config) validateSingleTenant() error {
 	if c.SlackAppToken == "" {
 		missing = append(missing, "SLACK_APP_TOKEN")
 	}
-	if c.GeminiAPIKey == "" {
-		missing = append(missing, "GEMINI_API_KEY")
+	if c.GeminiAPIKey == "" && c.GCPProject == "" {
+		missing = append(missing, "GEMINI_API_KEY or GCP_PROJECT")
 	}
-	if c.LokiBaseURL == "" {
+	if c.IsLoki() && c.LokiBaseURL == "" {
 		missing = append(missing, "LOKI_BASE_URL")
+	}
+	if c.IsCloudWatch() && c.AWSRegion == "" {
+		missing = append(missing, "AWS_REGION")
 	}
 	if len(missing) > 0 {
 		return fmt.Errorf("missing required environment variables: %s", strings.Join(missing, ", "))

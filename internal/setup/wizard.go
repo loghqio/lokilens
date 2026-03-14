@@ -157,7 +157,8 @@ func (w *Wizard) HandleLokiConfigSubmission(ctx context.Context, api *slack.Clie
 
 	_, err := client.Labels(checkCtx, loki.LabelsRequest{})
 	if err != nil {
-		return map[string]string{"loki_url": fmt.Sprintf("Could not connect to Loki: %v", err)}, nil
+		w.logger.Warn("loki connection check failed", "workspace", workspaceID, "error", err)
+		return map[string]string{"loki_url": "Could not connect to Loki — check the URL and API key, and ensure the endpoint is reachable."}, nil
 	}
 
 	// Save Loki config to workspace

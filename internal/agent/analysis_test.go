@@ -9,7 +9,8 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/lokilens/lokilens/internal/loki"
+
+
 )
 
 func TestExtractPatterns_GroupsSimilarLines(t *testing.T) {
@@ -1036,108 +1037,3 @@ func TestAvgPerMinute_ZeroStep(t *testing.T) {
 	}
 }
 
-func TestBuildQueryLogsOutput_TruncatesLongLogLines(t *testing.T) {
-	// Production JSON log lines can be 2-10KB. Without truncation,
-	// 100 entries at 5KB each = 500KB of LLM tokens — mostly noise fields
-	// the model will never use. Verify lines are capped at maxLogLineLength.
-	longLine := strings.Repeat("x", maxLogLineLength+500)
-	ts := fmt.Sprintf("%d", time.Now().UnixNano())
-
-	resp := &loki.QueryResponse{
-		Data: loki.QueryData{
-			ResultType: "streams",
-		},
-	}
-
-	// Build a stream with one long log line
-	streams := []loki.Stream{
-		{
-			Labels: map[string]string{"service": "payments"},
-			Values: [][]string{{ts, longLine}},
-		},
-	}
-	streamJSON, _ := json.Marshal(streams)
-	resp.Data.Result = streamJSON
-
-	out, err := buildQueryLogsOutput(resp, `{service="payments"}`, time.Now().Add(-time.Hour), time.Now(), 100, "backward")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if len(out.Logs) != 1 {
-		t.Fatalf("expected 1 log entry, got %d", len(out.Logs))
-	}
-
-	line := out.Logs[0].Line
-	if len(line) > maxLogLineLength+50 { // allow for "…[truncated]" suffix
-		t.Errorf("log line should be truncated to ~%d chars, got %d", maxLogLineLength, len(line))
-	}
-	if !strings.HasSuffix(line, "…[truncated]") {
-		t.Errorf("truncated line should end with '…[truncated]', got suffix: %q", line[len(line)-20:])
-	}
-}
-
-func TestBuildQueryLogsOutput_ShortLinesUnchanged(t *testing.T) {
-	// Lines under the limit should pass through unchanged
-	shortLine := "2024-01-15T14:31:02Z error: connection refused"
-	ts := fmt.Sprintf("%d", time.Now().UnixNano())
-
-	resp := &loki.QueryResponse{
-		Data: loki.QueryData{
-			ResultType: "streams",
-		},
-	}
-	streams := []loki.Stream{
-		{
-			Labels: map[string]string{"service": "payments"},
-			Values: [][]string{{ts, shortLine}},
-		},
-	}
-	streamJSON, _ := json.Marshal(streams)
-	resp.Data.Result = streamJSON
-
-	out, err := buildQueryLogsOutput(resp, `{service="payments"}`, time.Now().Add(-time.Hour), time.Now(), 100, "backward")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if len(out.Logs) != 1 {
-		t.Fatalf("expected 1 log entry, got %d", len(out.Logs))
-	}
-	if out.Logs[0].Line != shortLine {
-		t.Errorf("short line should be unchanged, got %q", out.Logs[0].Line)
-	}
-}
-
-func TestBuildQueryLogsOutput_TruncationIsUTF8Safe(t *testing.T) {
-	// Build a line where the truncation point falls inside a multibyte char.
-	// '€' is 3 bytes in UTF-8. Place it right at the boundary.
-	prefix := strings.Repeat("x", maxLogLineLength-1) + "€€€tail"
-	ts := fmt.Sprintf("%d", time.Now().UnixNano())
-
-	resp := &loki.QueryResponse{
-		Data: loki.QueryData{
-			ResultType: "streams",
-		},
-	}
-	streams := []loki.Stream{
-		{
-			Labels: map[string]string{"service": "payments"},
-			Values: [][]string{{ts, prefix}},
-		},
-	}
-	streamJSON, _ := json.Marshal(streams)
-	resp.Data.Result = streamJSON
-
-	out, err := buildQueryLogsOutput(resp, `{service="payments"}`, time.Now().Add(-time.Hour), time.Now(), 100, "backward")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if len(out.Logs) != 1 {
-		t.Fatalf("expected 1 log entry, got %d", len(out.Logs))
-	}
-
-	// Verify the result is valid UTF-8 (no mid-rune truncation)
-	line := out.Logs[0].Line
-	if !utf8.ValidString(line) {
-		t.Errorf("truncated line is not valid UTF-8: %q", line[:50])
-	}
-}
