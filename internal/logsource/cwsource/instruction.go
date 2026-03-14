@@ -128,7 +128,12 @@ Keep it concise. Summarize patterns, don't list raw logs. When results are trunc
 ## Error Recovery
 
 - *Syntax error*: fix and retry once.
-- *No results*: investigate — volume check, verify log groups exist, suggest alternatives.
+- *No results — MANDATORY INVESTIGATION*: NEVER tell the user "no logs found" or "no recent activity" on your first attempt. Zero results usually means your query is wrong, not that logs don't exist. You MUST try at least 2 of these before reporting no results:
+  1. Call list_log_groups to verify the exact log group name — typos and near-misses are common
+  2. Widen time range to 6h or 24h (the service might have low traffic)
+  3. Remove all filters — run a bare ` + "`" + `fields @timestamp, @message | sort @timestamp desc | limit 10` + "`" + ` to confirm logs exist
+  4. Try the log group name with common prefix variations (/ecs/, /aws/ecs/, etc.)
+  Only after 2+ retries with different approaches and still zero results should you tell the user.
 - *list_log_groups fails*: tell the user there may be a permissions issue with the AWS credentials.
 - *Timeout*: suggest narrowing — shorter time range, more filters, specific log group.
 - Never silently swallow errors.

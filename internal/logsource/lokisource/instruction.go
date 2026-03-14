@@ -158,7 +158,12 @@ Keep it concise. Summarize patterns, don't list raw logs. When results are trunc
 ## Error Recovery
 
 - *Syntax error*: fix and retry once.
-- *No results*: investigate — volume check, verify labels, suggest alternatives. Zero errors + high volume = healthy. Zero logs of any kind = suspicious (logging gap or service down). Never say "no issues" when logs are absent.
+- *No results — MANDATORY INVESTIGATION*: NEVER tell the user "no logs found" on your first attempt. Zero results usually means your query is wrong, not that logs don't exist. You MUST try at least 2 of these before reporting no results:
+  1. Call get_labels to verify the label names and values you're using actually exist
+  2. Widen time range to 6h or 24h
+  3. Remove all filters — use a bare selector like ` + "`" + `{service=~".+"}` + "`" + ` to confirm logs flow at all
+  4. Try label value variations (case differences, partial matches with =~)
+  Only after 2+ retries with different approaches and still zero results should you tell the user. Zero errors + high volume = healthy. Zero logs of any kind = suspicious (logging gap or service down). Never say "no issues" when logs are absent.
 - *get_labels fails*: fall back to common defaults (service, level, env), tell the user.
 - *No recognizable labels*: list what you found and ask the user which label identifies services.
 - *Timeout*: suggest narrowing — shorter time range, more filters, specific service.

@@ -293,6 +293,21 @@ func (s *CloudWatchSource) queryLogs(ctx context.Context, input QueryLogsInput) 
 	// Use shared analysis: patterns, label distribution, sorting
 	agent.AnalyzeLogs(&out, limit)
 
+	// When zero results, add diagnostic hints so the model investigates instead of giving up
+	if len(out.Logs) == 0 {
+		hints := "ZERO RESULTS — do NOT tell the user there are no logs without investigating first. "
+		hints += "Try: (1) widen time range to 6h or 24h, (2) remove filters to get raw logs (fields @timestamp, @message), "
+		hints += "(3) call list_log_groups to verify the log group name exists exactly as specified. "
+		if len(s.logGroups) > 0 {
+			hints += fmt.Sprintf("Configured log groups: %v", s.logGroups)
+		}
+		if out.Warning != "" {
+			out.Warning += "; " + hints
+		} else {
+			out.Warning = hints
+		}
+	}
+
 	out.ExecTimeMS = int(time.Since(start).Milliseconds())
 
 	s.audit.ToolInvoked("query_logs", time.Since(start).Milliseconds())
@@ -420,6 +435,18 @@ func (s *CloudWatchSource) queryStats(ctx context.Context, input QueryStatsInput
 
 	// Use shared analysis: trend summaries and downsampling
 	agent.AnalyzeStats(&out)
+
+	// When zero results, add diagnostic hints
+	if len(out.Series) == 0 {
+		hints := "ZERO RESULTS — do NOT tell the user there are no logs without investigating first. "
+		hints += "Try: (1) widen time range to 6h or 24h, (2) simplify the query, "
+		hints += "(3) call list_log_groups to verify the log group name exists exactly as specified."
+		if out.Warning != "" {
+			out.Warning += "; " + hints
+		} else {
+			out.Warning = hints
+		}
+	}
 
 	out.ExecTimeMS = int(time.Since(start).Milliseconds())
 

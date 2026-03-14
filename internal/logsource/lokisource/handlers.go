@@ -308,6 +308,13 @@ func buildQueryLogsOutput(resp *loki.QueryResponse, query string, start, end tim
 	// Use shared analysis for sorting, patterns, and label distribution
 	agent.AnalyzeLogs(&out, limit)
 
+	// When zero results, guide the model to investigate instead of giving up
+	if len(out.Logs) == 0 {
+		out.Warning = "ZERO RESULTS — do NOT tell the user there are no logs without investigating first. " +
+			"Try: (1) widen time range to 6h or 24h, (2) remove filters (use a bare selector like {service=~\".+\"}), " +
+			"(3) call get_labels to verify label names/values exist, (4) check for typos in label values."
+	}
+
 	return out, nil
 }
 
@@ -354,6 +361,13 @@ func buildQueryStatsOutput(resp *loki.QueryResponse, query string, start, end ti
 
 	// Use shared analysis for trend summaries and downsampling
 	agent.AnalyzeStats(&out)
+
+	// When zero results, guide the model to investigate instead of giving up
+	if len(out.Series) == 0 {
+		out.Warning = "ZERO RESULTS — do NOT tell the user there are no logs without investigating first. " +
+			"Try: (1) widen time range to 6h or 24h, (2) simplify the query, " +
+			"(3) call get_labels to verify label names/values exist."
+	}
 
 	return out, nil
 }
