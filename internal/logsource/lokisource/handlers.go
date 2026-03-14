@@ -120,7 +120,13 @@ func (h *ToolHandlers) QueryLogs(ctx context.Context, input QueryLogsInput) (age
 		return out, err
 	}
 
-	out.Warning = warning
+	if warning != "" {
+		if out.Warning != "" {
+			out.Warning = warning + " | " + out.Warning
+		} else {
+			out.Warning = warning
+		}
+	}
 	out.ExecTimeMS = int(time.Since(start).Milliseconds())
 
 	h.audit.ToolInvoked("query_logs", time.Since(start).Milliseconds(),
@@ -243,7 +249,13 @@ func (h *ToolHandlers) QueryStats(ctx context.Context, input QueryStatsInput) (a
 		return out, err
 	}
 
-	out.Warning = warning
+	if warning != "" {
+		if out.Warning != "" {
+			out.Warning = warning + " | " + out.Warning
+		} else {
+			out.Warning = warning
+		}
+	}
 	out.ExecTimeMS = int(time.Since(start).Milliseconds())
 
 	h.audit.ToolInvoked("query_stats", time.Since(start).Milliseconds(),
