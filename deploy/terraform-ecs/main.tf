@@ -19,8 +19,9 @@ locals {
   account_id    = data.aws_caller_identity.current.account_id
   is_cloudwatch = var.log_backend == "cloudwatch"
   is_loki       = var.log_backend == "loki"
+  is_vertex     = var.gcp_project != ""
 
-  # Build env vars based on backend — no Loki vars for CloudWatch, no CW vars for Loki
+  # Build env vars based on backend
   backend_env = local.is_cloudwatch ? [
     { name = "LOG_BACKEND", value = "cloudwatch" },
     { name = "AWS_REGION", value = var.region },
@@ -30,24 +31,36 @@ locals {
     { name = "LOKI_BASE_URL", value = var.loki_url },
   ]
 
-  # Secrets: always Slack + Gemini, plus Loki API key only if Loki backend
-  base_secrets = [
+  # Vertex AI env vars (only when gcp_project is set)
+  vertex_env = local.is_vertex ? [
+    { name = "GCP_PROJECT", value = var.gcp_project },
+    { name = "GCP_LOCATION", value = var.gcp_location },
+  ] : []
+
+  # Secrets
+  slack_secrets = [
     { name = "SLACK_BOT_TOKEN", valueFrom = aws_ssm_parameter.slack_bot_token.arn },
     { name = "SLACK_APP_TOKEN", valueFrom = aws_ssm_parameter.slack_app_token.arn },
-    { name = "GEMINI_API_KEY", valueFrom = aws_ssm_parameter.gemini_api_key.arn },
   ]
+  gemini_secrets = local.is_vertex ? [] : [
+    { name = "GEMINI_API_KEY", valueFrom = aws_ssm_parameter.gemini_api_key[0].arn },
+  ]
+  vertex_secrets = local.is_vertex && var.gcp_service_account_key != "" ? [
+    { name = "GCP_SERVICE_ACCOUNT_KEY", valueFrom = aws_ssm_parameter.gcp_service_account_key[0].arn },
+  ] : []
   loki_secrets = local.is_loki && var.loki_api_key != "" ? [
     { name = "LOKI_API_KEY", valueFrom = aws_ssm_parameter.loki_api_key[0].arn },
   ] : []
-  all_secrets = concat(local.base_secrets, local.loki_secrets)
+  all_secrets = concat(local.slack_secrets, local.gemini_secrets, local.vertex_secrets, local.loki_secrets)
 
   # SSM ARNs for IAM policy
   ssm_arns = concat(
     [
       aws_ssm_parameter.slack_bot_token.arn,
       aws_ssm_parameter.slack_app_token.arn,
-      aws_ssm_parameter.gemini_api_key.arn,
     ],
+    local.is_vertex ? [] : [aws_ssm_parameter.gemini_api_key[0].arn],
+    local.is_vertex && var.gcp_service_account_key != "" ? [aws_ssm_parameter.gcp_service_account_key[0].arn] : [],
     local.is_loki && var.loki_api_key != "" ? [aws_ssm_parameter.loki_api_key[0].arn] : [],
   )
 }
@@ -173,7 +186,7 @@ resource "aws_ecs_task_definition" "this" {
       image     = var.image
       essential = true
 
-      environment = concat(local.backend_env, [
+      environment = concat(local.backend_env, local.vertex_env, [
         { name = "GEMINI_MODEL", value = var.gemini_model },
         { name = "HEALTH_ADDR", value = ":8080" },
         { name = "LOG_LEVEL", value = "info" },
@@ -223,10 +236,21 @@ resource "aws_ssm_parameter" "slack_app_token" {
   tags  = var.tags
 }
 
+# Only created when using Gemini API (not Vertex AI)
 resource "aws_ssm_parameter" "gemini_api_key" {
+  count = local.is_vertex ? 0 : 1
   name  = "/${var.name}/gemini-api-key"
   type  = "SecureString"
   value = var.gemini_api_key
+  tags  = var.tags
+}
+
+# Only created when using Vertex AI with a service account key
+resource "aws_ssm_parameter" "gcp_service_account_key" {
+  count = local.is_vertex && var.gcp_service_account_key != "" ? 1 : 0
+  name  = "/${var.name}/gcp-service-account-key"
+  type  = "SecureString"
+  value = var.gcp_service_account_key
   tags  = var.tags
 }
 
@@ -259,6 +283,10 @@ resource "aws_ecs_service" "this" {
     precondition {
       condition     = var.log_backend != "loki" || var.loki_url != ""
       error_message = "loki_url is required when log_backend is 'loki'."
+    }
+    precondition {
+      condition     = var.gemini_api_key != "" || var.gcp_project != ""
+      error_message = "Either gemini_api_key or gcp_project (Vertex AI) must be set."
     }
   }
 

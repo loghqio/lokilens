@@ -64,11 +64,12 @@ variable "slack_app_token" {
   sensitive   = true
 }
 
-# -- Gemini --
+# -- Gemini / Vertex AI --
 
 variable "gemini_api_key" {
-  description = "Gemini API key"
+  description = "Gemini API key (leave empty if using Vertex AI)"
   type        = string
+  default     = ""
   sensitive   = true
 }
 
@@ -76,6 +77,25 @@ variable "gemini_model" {
   description = "Gemini model name"
   type        = string
   default     = "gemini-2.5-flash"
+}
+
+variable "gcp_project" {
+  description = "GCP project ID for Vertex AI (leave empty to use Gemini API key instead)"
+  type        = string
+  default     = ""
+}
+
+variable "gcp_location" {
+  description = "GCP location for Vertex AI"
+  type        = string
+  default     = "us-central1"
+}
+
+variable "gcp_service_account_key" {
+  description = "GCP service account key JSON for Vertex AI (the full JSON string)"
+  type        = string
+  default     = ""
+  sensitive   = true
 }
 
 # -- Container --

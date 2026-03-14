@@ -10,4 +10,6 @@ RUN apk add --no-cache ca-certificates
 COPY --from=builder /lokilens /lokilens
 
 EXPOSE 8080
-CMD ["/lokilens"]
+COPY docker/entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
+ENTRYPOINT ["/entrypoint.sh"]
