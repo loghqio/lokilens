@@ -506,6 +506,273 @@ func TestParseTimeSeriesResults_NilFields(t *testing.T) {
 	}
 }
 
+func TestParseTimeSeriesResults_FunctionStyleAggregates(t *testing.T) {
+	s := &CloudWatchSource{}
+
+	// CloudWatch returns field names like avg(duration_ms) for function-style aggregates.
+	// These MUST be recognized as aggregate values, not treated as labels.
+	result := &QueryResult{
+		Results: [][]types.ResultField{
+			{
+				{Field: strPtr("bin(5m)"), Value: strPtr("2024-01-15 14:00:00.000")},
+				{Field: strPtr("avg(duration_ms)"), Value: strPtr("42.5")},
+			},
+			{
+				{Field: strPtr("bin(5m)"), Value: strPtr("2024-01-15 14:05:00.000")},
+				{Field: strPtr("avg(duration_ms)"), Value: strPtr("38.1")},
+			},
+		},
+	}
+
+	series := s.parseStatsResults(result)
+
+	if len(series) != 1 {
+		t.Fatalf("expected 1 series, got %d", len(series))
+	}
+	if len(series[0].Values) != 2 {
+		t.Fatalf("expected 2 data points, got %d", len(series[0].Values))
+	}
+	// avg(duration_ms) must be recognized as an aggregate, so value should be "42.5" not "1"
+	if series[0].Values[0].Value != "42.5" {
+		t.Errorf("expected value=42.5 (aggregate recognized), got %q", series[0].Values[0].Value)
+	}
+	if series[0].Values[1].Value != "38.1" {
+		t.Errorf("expected value=38.1, got %q", series[0].Values[1].Value)
+	}
+}
+
+func TestParseGroupedResults_FunctionStyleAggregates(t *testing.T) {
+	s := &CloudWatchSource{}
+
+	// Grouped results with function-style aggregate: avg(duration_ms)
+	result := &QueryResult{
+		Results: [][]types.ResultField{
+			{
+				{Field: strPtr("service"), Value: strPtr("payments")},
+				{Field: strPtr("avg(duration_ms)"), Value: strPtr("150.3")},
+			},
+			{
+				{Field: strPtr("service"), Value: strPtr("orders")},
+				{Field: strPtr("avg(duration_ms)"), Value: strPtr("89.7")},
+			},
+		},
+	}
+
+	series := s.parseGroupedResults(result)
+
+	if len(series) != 2 {
+		t.Fatalf("expected 2 series, got %d", len(series))
+	}
+
+	sort.Slice(series, func(i, j int) bool {
+		return series[i].Labels["service"] < series[j].Labels["service"]
+	})
+
+	// avg(duration_ms) must be recognized as aggregate, so value="150.3" not "0"
+	if series[1].Labels["service"] != "payments" {
+		t.Errorf("expected service=payments, got %v", series[1].Labels)
+	}
+	if series[1].Values[0].Value != "150.3" {
+		t.Errorf("expected value=150.3 (aggregate recognized), got %q", series[1].Values[0].Value)
+	}
+	if series[0].Labels["service"] != "orders" {
+		t.Errorf("expected service=orders, got %v", series[0].Labels)
+	}
+	if series[0].Values[0].Value != "89.7" {
+		t.Errorf("expected value=89.7, got %q", series[0].Values[0].Value)
+	}
+}
+
+func TestParseGroupedResults_CustomAlias(t *testing.T) {
+	s := &CloudWatchSource{}
+
+	// "stats count(*) as error_count" returns field name "error_count".
+	// This is a custom alias that won't match any known aggregate prefix.
+	// Documents the limitation: it is treated as a label, not an aggregate.
+	result := &QueryResult{
+		Results: [][]types.ResultField{
+			{
+				{Field: strPtr("service"), Value: strPtr("payments")},
+				{Field: strPtr("error_count"), Value: strPtr("42")},
+			},
+		},
+	}
+
+	series := s.parseGroupedResults(result)
+
+	if len(series) != 1 {
+		t.Fatalf("expected 1 series, got %d", len(series))
+	}
+	// "error_count" is not recognized as an aggregate — it becomes a label.
+	// Value defaults to "0" since no aggregate field was found.
+	if series[0].Values[0].Value != "0" {
+		t.Errorf("expected value=0 (custom alias not recognized as aggregate), got %q", series[0].Values[0].Value)
+	}
+	// The alias becomes a label instead
+	if series[0].Labels["error_count"] != "42" {
+		t.Errorf("expected error_count=42 in labels, got %v", series[0].Labels)
+	}
+}
+
+func TestParseTimeSeriesResults_AllNilFields(t *testing.T) {
+	s := &CloudWatchSource{}
+
+	// Every field in every row has nil Field or Value — should not panic.
+	result := &QueryResult{
+		Results: [][]types.ResultField{
+			{
+				{Field: nil, Value: nil},
+				{Field: nil, Value: strPtr("orphan")},
+				{Field: strPtr("bin(5m)"), Value: nil},
+			},
+			{
+				{Field: nil, Value: nil},
+			},
+		},
+	}
+
+	series := s.parseStatsResults(result)
+
+	// bin(5m) field exists but with nil value → detected as time series.
+	// All fields have nil Field or nil Value, so no timestamps or values extracted.
+	// Should not panic regardless of output shape.
+	if series == nil {
+		// Acceptable: no meaningful data
+		return
+	}
+	for _, ms := range series {
+		for _, dp := range ms.Values {
+			// Every point should have the default value since no aggregate was found
+			if dp.Value != "1" {
+				t.Errorf("expected default value=1, got %q", dp.Value)
+			}
+		}
+	}
+}
+
+func TestParseGroupedResults_AllNilFields(t *testing.T) {
+	s := &CloudWatchSource{}
+
+	// Every field has nil Field or nil Value — should not panic.
+	result := &QueryResult{
+		Results: [][]types.ResultField{
+			{
+				{Field: nil, Value: nil},
+				{Field: nil, Value: strPtr("orphan")},
+			},
+			{
+				{Field: strPtr("service"), Value: nil},
+				{Field: nil, Value: strPtr("42")},
+			},
+		},
+	}
+
+	series := s.parseGroupedResults(result)
+
+	// All fields have nil Field or nil Value, so hasData is never set to true.
+	// Both rows should be skipped.
+	if len(series) != 0 {
+		t.Errorf("expected 0 series for all-nil fields, got %d", len(series))
+	}
+}
+
+func TestParseStatsResults_SingleRow(t *testing.T) {
+	s := &CloudWatchSource{}
+
+	// Single row with just count(*)=42, no bin column → grouped result.
+	result := &QueryResult{
+		Results: [][]types.ResultField{
+			{
+				{Field: strPtr("count(*)"), Value: strPtr("42")},
+			},
+		},
+	}
+
+	series := s.parseStatsResults(result)
+
+	if len(series) != 1 {
+		t.Fatalf("expected 1 series, got %d", len(series))
+	}
+	if len(series[0].Values) != 1 {
+		t.Fatalf("expected 1 data point, got %d", len(series[0].Values))
+	}
+	if series[0].Values[0].Value != "42" {
+		t.Errorf("expected value=42, got %q", series[0].Values[0].Value)
+	}
+}
+
+func TestValidateInsightsQuery_EmptyString(t *testing.T) {
+	err := validateInsightsQuery("")
+	if err == nil {
+		t.Fatal("expected error for empty query")
+	}
+	if !strings.Contains(err.Error(), "empty") {
+		t.Errorf("expected 'empty' in error, got %q", err.Error())
+	}
+}
+
+func TestValidateInsightsQuery_MatchAllRegex(t *testing.T) {
+	err := validateInsightsQuery("filter @message like /.*/")
+	if err == nil {
+		t.Fatal("expected error for dangerous regex pattern")
+	}
+	if !strings.Contains(err.Error(), "expensive") {
+		t.Errorf("expected 'expensive' in error, got %q", err.Error())
+	}
+}
+
+func TestValidateInsightsQuery_StatsWithBin(t *testing.T) {
+	err := validateInsightsQuery("filter @message like /error/ | stats count(*) by bin(5m)")
+	if err != nil {
+		t.Errorf("expected no error for normal query, got %v", err)
+	}
+}
+
+func TestValidateInsightsQuery_DeleteBlocked(t *testing.T) {
+	err := validateInsightsQuery("delete from logs")
+	if err == nil {
+		t.Fatal("expected error for blocked keyword")
+	}
+	if !strings.Contains(err.Error(), "blocked") {
+		t.Errorf("expected 'blocked' in error, got %q", err.Error())
+	}
+}
+
+func TestIsAggregateField(t *testing.T) {
+	tests := []struct {
+		name     string
+		expected bool
+	}{
+		{"count(*)", true},
+		{"avg(duration_ms)", true},
+		{"sum(bytes)", true},
+		{"max(latency)", true},
+		{"min(latency)", true},
+		{"p99(duration)", false},  // not pct( prefix
+		{"pct(@duration, 95)", true},
+		{"count_distinct(user_id)", true},
+		{"service", false},
+		{"@message", false},
+		{"bin(5m)", false},
+		{"@ptr", false},
+		{"error_count", false},  // custom alias
+		{"percentile(latency, 99)", true},
+		{"stddev(response_time)", true},
+		{"median(latency)", true},
+		{"earliest(@timestamp)", true},
+		{"latest(@timestamp)", true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := isAggregateField(tt.name)
+			if got != tt.expected {
+				t.Errorf("isAggregateField(%q) = %v, want %v", tt.name, got, tt.expected)
+			}
+		})
+	}
+}
+
 func strPtr(s string) *string {
 	return &s
 }

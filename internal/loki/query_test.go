@@ -61,10 +61,63 @@ func TestParseRelativeTime_RFC3339(t *testing.T) {
 	}
 }
 
+func TestParseRelativeTime_NaturalLanguage(t *testing.T) {
+	cases := []struct {
+		input  string
+		minAgo time.Duration
+		maxAgo time.Duration
+	}{
+		{"yesterday", 24*time.Hour - 2*time.Second, 24*time.Hour + 2*time.Second},
+		{"last night", 12*time.Hour - 2*time.Second, 12*time.Hour + 2*time.Second},
+		{"last week", 7*24*time.Hour - 2*time.Second, 7*24*time.Hour + 2*time.Second},
+		{"last 2 hours", 2*time.Hour - 2*time.Second, 2*time.Hour + 2*time.Second},
+		{"last 30 minutes", 30*time.Minute - 2*time.Second, 30*time.Minute + 2*time.Second},
+	}
+	for _, tc := range cases {
+		result, err := ParseRelativeTime(tc.input)
+		if err != nil {
+			t.Errorf("%q: unexpected error: %v", tc.input, err)
+			continue
+		}
+		ago := time.Since(result)
+		if ago < tc.minAgo || ago > tc.maxAgo {
+			t.Errorf("%q: expected ~%v ago, got %v ago", tc.input, tc.minAgo, ago)
+		}
+	}
+}
+
+func TestParseRelativeTime_YesterdayAtTime(t *testing.T) {
+	result, err := ParseRelativeTime("yesterday at noon")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	now := time.Now()
+	y := now.AddDate(0, 0, -1)
+	expected := time.Date(y.Year(), y.Month(), y.Day(), 12, 0, 0, 0, now.Location())
+	diff := result.Sub(expected).Abs()
+	if diff > 2*time.Second {
+		t.Errorf("expected ~%v, got %v (diff=%v)", expected, result, diff)
+	}
+}
+
+func TestParseRelativeTime_YesterdayAt2pm(t *testing.T) {
+	result, err := ParseRelativeTime("yesterday at 2pm")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	now := time.Now()
+	y := now.AddDate(0, 0, -1)
+	expected := time.Date(y.Year(), y.Month(), y.Day(), 14, 0, 0, 0, now.Location())
+	diff := result.Sub(expected).Abs()
+	if diff > 2*time.Second {
+		t.Errorf("expected ~%v, got %v (diff=%v)", expected, result, diff)
+	}
+}
+
 func TestParseRelativeTime_Invalid(t *testing.T) {
-	_, err := ParseRelativeTime("yesterday")
+	_, err := ParseRelativeTime("not a real time at all xyz")
 	if err == nil {
-		t.Error("expected error for invalid time format")
+		t.Error("expected error for truly invalid time format")
 	}
 }
 

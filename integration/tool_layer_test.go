@@ -20,6 +20,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -1024,6 +1025,203 @@ func TestRealWorldQuery_MultiServiceErrorsWithLabels(t *testing.T) {
 		t.Fatalf("multi-service error query failed: %v", err)
 	}
 	t.Logf("multi-service timeout/refused/503 errors: %d logs, %d patterns", out.TotalLogs, out.TotalPatterns)
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// Adversarial: Boundary Values and Malformed Inputs
+// ──────────────────────────────────────────────────────────────────────────────
+
+func TestQueryLogs_LimitZero(t *testing.T) {
+	out, err := handlers.QueryLogs(ctx(), lokisource.QueryLogsInput{
+		LogQL:     `{job="loggen"}`,
+		StartTime: "1h ago",
+		Limit:     0,
+	})
+	if err != nil {
+		t.Fatalf("QueryLogs with Limit=0 failed: %v", err)
+	}
+	if out.TotalLogs > 100 {
+		t.Errorf("Limit=0 should default to 100, got %d logs", out.TotalLogs)
+	}
+	if out.TotalLogs == 0 {
+		t.Error("expected logs from loggen (Limit=0 should default to 100, not 0)")
+	}
+}
+
+func TestQueryLogs_LimitNegative(t *testing.T) {
+	out, err := handlers.QueryLogs(ctx(), lokisource.QueryLogsInput{
+		LogQL:     `{job="loggen"}`,
+		StartTime: "1h ago",
+		Limit:     -1,
+	})
+	if err != nil {
+		t.Fatalf("QueryLogs with Limit=-1 failed: %v", err)
+	}
+	if out.TotalLogs > 1 {
+		t.Errorf("Limit=-1 should be clamped to 1, got %d logs", out.TotalLogs)
+	}
+}
+
+func TestQueryLogs_LimitHuge(t *testing.T) {
+	out, err := handlers.QueryLogs(ctx(), lokisource.QueryLogsInput{
+		LogQL:     `{job="loggen"}`,
+		StartTime: "1h ago",
+		Limit:     999999,
+	})
+	if err != nil {
+		t.Fatalf("QueryLogs with Limit=999999 should not error: %v", err)
+	}
+	if out.TotalLogs > 500 {
+		t.Errorf("Limit=999999 should be clamped to MaxResults (500), got %d logs", out.TotalLogs)
+	}
+}
+
+func TestQueryLogs_InvalidDirection(t *testing.T) {
+	out, err := handlers.QueryLogs(ctx(), lokisource.QueryLogsInput{
+		LogQL:     `{job="loggen"}`,
+		StartTime: "1h ago",
+		Direction: "NONSENSE",
+		Limit:     5,
+	})
+	if err != nil {
+		t.Fatalf("QueryLogs with Direction=NONSENSE failed: %v", err)
+	}
+	if out.Direction != "backward" {
+		t.Errorf("Direction=NONSENSE should default to backward, got %q", out.Direction)
+	}
+}
+
+func TestQueryLogs_UppercaseDirection(t *testing.T) {
+	out, err := handlers.QueryLogs(ctx(), lokisource.QueryLogsInput{
+		LogQL:     `{job="loggen"}`,
+		StartTime: "1h ago",
+		Direction: "BACKWARD",
+		Limit:     5,
+	})
+	if err != nil {
+		t.Fatalf("QueryLogs with Direction=BACKWARD failed: %v", err)
+	}
+	if out.Direction != "backward" {
+		t.Errorf("Direction=BACKWARD should be treated as backward, got %q", out.Direction)
+	}
+}
+
+func TestQueryLogs_MalformedStartTime(t *testing.T) {
+	_, err := handlers.QueryLogs(ctx(), lokisource.QueryLogsInput{
+		LogQL:     `{job="loggen"}`,
+		StartTime: "not a real time",
+		Limit:     5,
+	})
+	if err == nil {
+		t.Error("expected error for malformed StartTime")
+	}
+}
+
+func TestQueryLogs_NaturalLanguageTime(t *testing.T) {
+	// Parser handles natural language: "yesterday", "last 2 hours", "yesterday at noon", etc.
+	// The LLM may generate these despite being instructed to use relative format.
+	_, err := handlers.QueryLogs(ctx(), lokisource.QueryLogsInput{
+		LogQL:     `{job="loggen"}`,
+		StartTime: "yesterday",
+		EndTime:   "now",
+		Limit:     5,
+	})
+	if err != nil {
+		t.Errorf("natural language time 'yesterday' should be accepted: %v", err)
+	}
+}
+
+func TestQueryStats_MalformedStartTime(t *testing.T) {
+	_, err := handlers.QueryStats(ctx(), lokisource.QueryStatsInput{
+		LogQL:     `sum(count_over_time({job="loggen"}[1m]))`,
+		StartTime: "garbage",
+	})
+	if err == nil {
+		t.Error("expected error for malformed StartTime on QueryStats")
+	}
+}
+
+func TestQueryLogs_FutureTimeRange(t *testing.T) {
+	futureEnd := time.Now().Add(1 * time.Hour).Format(time.RFC3339)
+	out, err := handlers.QueryLogs(ctx(), lokisource.QueryLogsInput{
+		LogQL:     `{job="loggen"}`,
+		StartTime: "now",
+		EndTime:   futureEnd,
+		Limit:     5,
+	})
+	if err != nil {
+		t.Fatalf("QueryLogs with future EndTime should not error: %v", err)
+	}
+	// clampTimeRange caps end to now, then defaults to 1h range
+	t.Logf("future time range handled: %d logs, warning=%q", out.TotalLogs, out.Warning)
+}
+
+func TestQueryLogs_VeryWideRange(t *testing.T) {
+	out, err := handlers.QueryLogs(ctx(), lokisource.QueryLogsInput{
+		LogQL:     `{job="loggen"}`,
+		StartTime: "48h ago",
+		Limit:     10,
+	})
+	if err != nil {
+		t.Fatalf("QueryLogs with 48h range should not error: %v", err)
+	}
+	if out.Warning != "" && strings.Contains(out.Warning, "clamped") {
+		t.Logf("correctly clamped 48h range: warning=%q", out.Warning)
+	} else if out.Warning == "" {
+		t.Logf("no warning for 48h range (may not exceed configured max)")
+	}
+}
+
+func TestQueryStats_EmptyLogQL(t *testing.T) {
+	_, err := handlers.QueryStats(ctx(), lokisource.QueryStatsInput{
+		LogQL:     "",
+		StartTime: "1h ago",
+	})
+	if err == nil {
+		t.Error("expected validation error for empty LogQL on QueryStats")
+	}
+}
+
+func TestGetLabelValues_SpecialChars(t *testing.T) {
+	// Should not panic — just return empty or error gracefully
+	out, err := handlers.GetLabelValues(ctx(), lokisource.GetLabelValuesInput{
+		LabelName: "label/with/slashes",
+	})
+	if err != nil {
+		t.Logf("special chars label returned error (acceptable): %v", err)
+		return
+	}
+	if len(out.Values) != 0 {
+		t.Errorf("expected empty values for label with special chars, got %v", out.Values)
+	}
+}
+
+func TestConcurrentHeavyLoad(t *testing.T) {
+	const goroutines = 10
+	var wg sync.WaitGroup
+	errs := make(chan error, goroutines)
+
+	for i := range goroutines {
+		wg.Add(1)
+		go func(id int) {
+			defer wg.Done()
+			_, err := handlers.QueryLogs(ctx(), lokisource.QueryLogsInput{
+				LogQL:     `{job="loggen"}`,
+				StartTime: "1h ago",
+				Limit:     10,
+			})
+			if err != nil {
+				errs <- fmt.Errorf("goroutine %d: %w", id, err)
+			}
+		}(i)
+	}
+
+	wg.Wait()
+	close(errs)
+
+	for err := range errs {
+		t.Errorf("concurrent heavy load failure: %v", err)
+	}
 }
 
 // ──────────────────────────────────────────────────────────────────────────────

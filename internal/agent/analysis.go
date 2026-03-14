@@ -157,6 +157,12 @@ func ParseTimeOrDefault(input string, defaultAgo time.Duration) (time.Time, erro
 
 var relativeTimePattern = regexp.MustCompile(`^(\d+)\s*(s|sec|second|seconds|m|min|minute|minutes|h|hour|hours|d|day|days|w|week|weeks)\s*(ago)?$`)
 
+// lastNPattern matches "last N hours", "last 30 minutes", "last 3 days", etc.
+var lastNPattern = regexp.MustCompile(`^last\s+(\d+)\s*(s|sec|second|seconds|m|min|minute|minutes|h|hour|hours|d|day|days|w|week|weeks)$`)
+
+// timeOfDayPattern matches "2pm", "2:30pm", "14:00", "noon", "midnight".
+var timeOfDayPattern = regexp.MustCompile(`^(\d{1,2})(?::(\d{2}))?\s*(am|pm)?$`)
+
 func parseRelativeTime(input string) (time.Time, error) {
 	input = strings.TrimSpace(input)
 
@@ -165,6 +171,8 @@ func parseRelativeTime(input string) (time.Time, error) {
 	}
 
 	lower := strings.ToLower(input)
+
+	// Numeric relative: "2h ago", "30m", "1d ago"
 	if matches := relativeTimePattern.FindStringSubmatch(lower); matches != nil {
 		amount, _ := strconv.Atoi(matches[1])
 		unit := matches[2]
@@ -172,23 +180,138 @@ func parseRelativeTime(input string) (time.Time, error) {
 		return time.Now().Add(-dur), nil
 	}
 
+	// Natural language time — the LLM may send these directly even though
+	// the instruction tells it to convert to relative format.
+	if t, ok := parseNaturalTime(lower); ok {
+		return t, nil
+	}
+
+	// Go duration format: "2h30m", "45s"
 	if d, err := time.ParseDuration(lower); err == nil {
 		return time.Now().Add(-d), nil
 	}
 
+	// RFC3339
 	if t, err := time.Parse(time.RFC3339, input); err == nil {
 		return t, nil
 	}
 
+	// RFC3339Nano
 	if t, err := time.Parse(time.RFC3339Nano, input); err == nil {
 		return t, nil
 	}
 
+	// Unix nanosecond timestamp
 	if ns, err := strconv.ParseInt(input, 10, 64); err == nil {
 		return time.Unix(0, ns), nil
 	}
 
-	return time.Time{}, fmt.Errorf("cannot parse time %q: expected relative (e.g., '2h ago'), RFC3339, or Unix nanoseconds", input)
+	return time.Time{}, fmt.Errorf("cannot parse time %q: expected relative (e.g., '2h ago', 'yesterday', 'last 2 hours'), RFC3339, or Unix nanoseconds", input)
+}
+
+// parseNaturalTime handles natural language time expressions the LLM might
+// generate: "yesterday", "last night", "yesterday at noon", "last 2 hours", etc.
+func parseNaturalTime(lower string) (time.Time, bool) {
+	now := time.Now()
+
+	// Fixed expressions
+	switch lower {
+	case "yesterday":
+		return now.Add(-24 * time.Hour), true
+	case "today":
+		return time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location()), true
+	case "this morning":
+		morning := time.Date(now.Year(), now.Month(), now.Day(), 6, 0, 0, 0, now.Location())
+		if morning.After(now) {
+			morning = morning.Add(-24 * time.Hour)
+		}
+		return morning, true
+	case "last night":
+		return now.Add(-12 * time.Hour), true
+	case "last week":
+		return now.Add(-7 * 24 * time.Hour), true
+	case "last month":
+		return now.AddDate(0, -1, 0), true
+	case "noon", "today at noon", "at noon":
+		return time.Date(now.Year(), now.Month(), now.Day(), 12, 0, 0, 0, now.Location()), true
+	case "midnight", "today at midnight", "at midnight":
+		return time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location()), true
+	case "yesterday at noon":
+		y := now.AddDate(0, 0, -1)
+		return time.Date(y.Year(), y.Month(), y.Day(), 12, 0, 0, 0, now.Location()), true
+	case "yesterday at midnight":
+		y := now.AddDate(0, 0, -1)
+		return time.Date(y.Year(), y.Month(), y.Day(), 0, 0, 0, 0, now.Location()), true
+	}
+
+	// "last N hours/minutes/days" → relative offset
+	if matches := lastNPattern.FindStringSubmatch(lower); matches != nil {
+		amount, _ := strconv.Atoi(matches[1])
+		dur := toDuration(amount, matches[2])
+		return now.Add(-dur), true
+	}
+
+	// "yesterday at <time>" → yesterday at specific time
+	if strings.HasPrefix(lower, "yesterday at ") {
+		if tod, ok := parseTimeOfDay(lower[len("yesterday at "):]); ok {
+			y := now.AddDate(0, 0, -1)
+			return time.Date(y.Year(), y.Month(), y.Day(), tod.hour, tod.min, 0, 0, now.Location()), true
+		}
+	}
+
+	// "today at <time>" or "at <time>" → today at specific time
+	rest := ""
+	if strings.HasPrefix(lower, "today at ") {
+		rest = lower[len("today at "):]
+	} else if strings.HasPrefix(lower, "at ") {
+		rest = lower[len("at "):]
+	}
+	if rest != "" {
+		if tod, ok := parseTimeOfDay(rest); ok {
+			return time.Date(now.Year(), now.Month(), now.Day(), tod.hour, tod.min, 0, 0, now.Location()), true
+		}
+	}
+
+	return time.Time{}, false
+}
+
+type parsedTimeOfDay struct {
+	hour, min int
+}
+
+// parseTimeOfDay parses "2pm", "2:30pm", "14:00", "noon", "midnight".
+func parseTimeOfDay(s string) (parsedTimeOfDay, bool) {
+	s = strings.TrimSpace(s)
+
+	switch s {
+	case "noon":
+		return parsedTimeOfDay{12, 0}, true
+	case "midnight":
+		return parsedTimeOfDay{0, 0}, true
+	}
+
+	matches := timeOfDayPattern.FindStringSubmatch(s)
+	if matches == nil {
+		return parsedTimeOfDay{}, false
+	}
+
+	hour, _ := strconv.Atoi(matches[1])
+	minute := 0
+	if matches[2] != "" {
+		minute, _ = strconv.Atoi(matches[2])
+	}
+
+	if matches[3] == "pm" && hour < 12 {
+		hour += 12
+	} else if matches[3] == "am" && hour == 12 {
+		hour = 0
+	}
+
+	if hour > 23 || minute > 59 {
+		return parsedTimeOfDay{}, false
+	}
+
+	return parsedTimeOfDay{hour, minute}, true
 }
 
 func toDuration(amount int, unit string) time.Duration {

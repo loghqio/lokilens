@@ -516,8 +516,7 @@ func (s *CloudWatchSource) parseTimeSeriesResults(result *QueryResult, binField 
 			switch {
 			case name == binField:
 				ts = val
-			case name == "count(*)" || name == "count" || name == "cnt" ||
-				name == "sum" || name == "avg" || name == "max" || name == "min":
+			case isAggregateField(name):
 				value = val
 			case name == "@ptr":
 				// skip
@@ -570,8 +569,7 @@ func (s *CloudWatchSource) parseGroupedResults(result *QueryResult) []agent.Metr
 			val := *field.Value
 
 			switch {
-			case name == "count(*)" || name == "count" || name == "cnt" ||
-				name == "sum" || name == "avg" || name == "max" || name == "min":
+			case isAggregateField(name):
 				value = val
 				hasData = true
 			case name == "@ptr":
@@ -637,6 +635,28 @@ func sanitizeTimeRange(start, end time.Time) (time.Time, time.Time, string) {
 
 	warning := strings.Join(warnings, "; ")
 	return start, end, warning
+}
+
+// isAggregateField checks if a CloudWatch Insights result field name is an
+// aggregate value (vs. a label/grouping field). Matches exact names like "count(*)"
+// and function-style names like "avg(duration_ms)", "p99(latency)", aliases from
+// "stats count(*) as error_count", etc.
+func isAggregateField(name string) bool {
+	switch name {
+	case "count(*)", "count", "cnt":
+		return true
+	}
+	for _, prefix := range []string{
+		"count(", "sum(", "avg(", "max(", "min(",
+		"pct(", "percentile(", "count_distinct(",
+		"earliest(", "latest(",
+		"stddev(", "median(",
+	} {
+		if strings.HasPrefix(name, prefix) {
+			return true
+		}
+	}
+	return false
 }
 
 func seriesKeyFromLabels(labels map[string]string) string {

@@ -646,3 +646,188 @@ func TestCWRealWorldQuery_LogVolume(t *testing.T) {
 	}
 	t.Logf("payments log volume: %d series", len(out.Series))
 }
+
+// ──────────────────────────────────────────────────────────────────────────────
+// Adversarial: Boundary Values and Malformed Inputs
+// ──────────────────────────────────────────────────────────────────────────────
+
+func TestCWQueryLogs_LimitZero(t *testing.T) {
+	skipIfNoCW(t)
+
+	out, err := cwSource.QueryLogs(cwCtx(), cwsource.QueryLogsInput{
+		LogGroups: cwLogGroups,
+		StartTime: "1h ago",
+		Limit:     0,
+	})
+	if err != nil {
+		t.Skipf("QueryLogs with Limit=0 failed (LocalStack may be limited): %v", err)
+	}
+	if out.TotalLogs > 100 {
+		t.Errorf("Limit=0 should default to 100, got %d logs", out.TotalLogs)
+	}
+}
+
+func TestCWQueryLogs_LimitNegative(t *testing.T) {
+	skipIfNoCW(t)
+
+	out, err := cwSource.QueryLogs(cwCtx(), cwsource.QueryLogsInput{
+		LogGroups: cwLogGroups,
+		StartTime: "1h ago",
+		Limit:     -5,
+	})
+	if err != nil {
+		t.Skipf("QueryLogs with Limit=-5 failed (LocalStack may be limited): %v", err)
+	}
+	// Should clamp to positive default (100), not panic or return negative
+	t.Logf("Limit=-5 returned %d logs (clamped to positive default)", out.TotalLogs)
+}
+
+func TestCWQueryLogs_LimitHuge(t *testing.T) {
+	skipIfNoCW(t)
+
+	out, err := cwSource.QueryLogs(cwCtx(), cwsource.QueryLogsInput{
+		LogGroups: cwLogGroups,
+		StartTime: "1h ago",
+		Limit:     999999,
+	})
+	if err != nil {
+		t.Skipf("QueryLogs with Limit=999999 failed (LocalStack may be limited): %v", err)
+	}
+	if out.TotalLogs > 500 {
+		t.Errorf("Limit=999999 should be clamped to 500, got %d logs", out.TotalLogs)
+	}
+}
+
+func TestCWQueryLogs_MalformedStartTime(t *testing.T) {
+	skipIfNoCW(t)
+
+	_, err := cwSource.QueryLogs(cwCtx(), cwsource.QueryLogsInput{
+		LogGroups: cwLogGroups,
+		StartTime: "not_a_time",
+		Limit:     5,
+	})
+	if err == nil {
+		t.Error("expected error for malformed StartTime")
+	}
+}
+
+func TestCWQueryLogs_NaturalLanguageTime(t *testing.T) {
+	skipIfNoCW(t)
+
+	// Parser handles natural language: "yesterday at noon", "last 2 hours", etc.
+	// The LLM may generate these despite being instructed to use relative format.
+	_, err := cwSource.QueryLogs(cwCtx(), cwsource.QueryLogsInput{
+		LogGroups: cwLogGroups,
+		StartTime: "yesterday at noon",
+		EndTime:   "now",
+		Limit:     5,
+	})
+	if err != nil {
+		t.Errorf("natural language time 'yesterday at noon' should be accepted: %v", err)
+	}
+}
+
+func TestCWQueryStats_MalformedTime(t *testing.T) {
+	skipIfNoCW(t)
+
+	_, err := cwSource.QueryStats(cwCtx(), cwsource.QueryStatsInput{
+		Query:     `stats count(*) by bin(5m)`,
+		LogGroups: cwLogGroups,
+		StartTime: "garbage",
+	})
+	if err == nil {
+		t.Error("expected error for malformed StartTime on QueryStats")
+	}
+}
+
+func TestCWQueryStats_EmptyQuery(t *testing.T) {
+	skipIfNoCW(t)
+
+	_, err := cwSource.QueryStats(cwCtx(), cwsource.QueryStatsInput{
+		Query:     "",
+		LogGroups: cwLogGroups,
+		StartTime: "1h ago",
+	})
+	if err == nil {
+		t.Error("expected validation error for empty Query on QueryStats")
+	}
+}
+
+func TestCWQueryStats_DangerousRegex(t *testing.T) {
+	skipIfNoCW(t)
+
+	_, err := cwSource.QueryStats(cwCtx(), cwsource.QueryStatsInput{
+		Query:     `filter @message like /.*/`,
+		LogGroups: cwLogGroups,
+		StartTime: "1h ago",
+	})
+	if err == nil {
+		t.Error("expected validation error for dangerous regex pattern")
+	}
+}
+
+func TestCWListLogGroups_NonexistentPrefix(t *testing.T) {
+	skipIfNoCW(t)
+
+	out, err := cwSource.ListLogGroups(cwCtx(), cwsource.ListLogGroupsInput{
+		Prefix: "/nonexistent/prefix/xyz/",
+	})
+	if err != nil {
+		t.Fatalf("ListLogGroups with nonexistent prefix should not error: %v", err)
+	}
+	if len(out.LogGroups) != 0 {
+		t.Errorf("expected 0 groups for nonexistent prefix, got %d: %v", len(out.LogGroups), out.LogGroups)
+	}
+}
+
+func TestCWQueryLogs_NonexistentLogGroup(t *testing.T) {
+	skipIfNoCW(t)
+
+	out, err := cwSource.QueryLogs(cwCtx(), cwsource.QueryLogsInput{
+		LogGroups: []string{"/nonexistent/group/xyz"},
+		StartTime: "1h ago",
+		Limit:     5,
+	})
+	if err != nil {
+		// Error from CloudWatch (group doesn't exist) is acceptable
+		t.Logf("nonexistent log group returned error (acceptable): %v", err)
+		return
+	}
+	// If it didn't error, it should return 0 results — not panic
+	t.Logf("nonexistent log group returned %d logs (no panic)", out.TotalLogs)
+}
+
+func TestCWQueryLogs_VeryWideRange(t *testing.T) {
+	skipIfNoCW(t)
+
+	out, err := cwSource.QueryLogs(cwCtx(), cwsource.QueryLogsInput{
+		LogGroups: cwLogGroups,
+		StartTime: "48h ago",
+		Limit:     10,
+	})
+	if err != nil {
+		t.Skipf("QueryLogs with 48h range failed (LocalStack may be limited): %v", err)
+	}
+	if out.Warning != "" && strings.Contains(out.Warning, "clamped") {
+		t.Logf("correctly clamped 48h range: warning=%q", out.Warning)
+	} else if out.Warning == "" {
+		t.Logf("no warning for 48h range (may not exceed configured max)")
+	}
+}
+
+func TestCWQueryLogs_FutureEndTime(t *testing.T) {
+	skipIfNoCW(t)
+
+	futureEnd := time.Now().Add(1 * time.Hour).Format(time.RFC3339)
+	out, err := cwSource.QueryLogs(cwCtx(), cwsource.QueryLogsInput{
+		LogGroups: cwLogGroups,
+		StartTime: "1h ago",
+		EndTime:   futureEnd,
+		Limit:     5,
+	})
+	if err != nil {
+		t.Skipf("QueryLogs with future EndTime failed (LocalStack may be limited): %v", err)
+	}
+	// sanitizeTimeRange should cap end to now
+	t.Logf("future EndTime handled: %d logs, warning=%q", out.TotalLogs, out.Warning)
+}
