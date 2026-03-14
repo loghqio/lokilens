@@ -3,8 +3,7 @@ region     = "us-east-1"
 vpc_id     = "vpc-0abc123def456"
 subnet_ids = ["subnet-0aaa", "subnet-0bbb"]
 
-# Required — Log backend
-log_backend   = "cloudwatch"
+# Required — CloudWatch log groups to query
 cw_log_groups = "/aws/ecs/payments,/aws/lambda/orders"
 
 # Required — Slack (create app at https://api.slack.com/apps)
@@ -21,7 +20,8 @@ gemini_api_key = "your-gemini-api-key"
 # memory       = 512
 # tags         = { team = "platform", env = "production" }
 
-# For Loki backend instead:
+# --- For Loki backend instead ---
 # log_backend  = "loki"
 # loki_url     = "https://loki.example.com"
 # loki_api_key = "your-loki-key"
+# cw_log_groups = ""  # not needed for Loki

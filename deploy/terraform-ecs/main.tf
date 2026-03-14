@@ -16,30 +16,64 @@ provider "aws" {
 data "aws_caller_identity" "current" {}
 
 locals {
-  account_id = data.aws_caller_identity.current.account_id
+  account_id    = data.aws_caller_identity.current.account_id
+  is_cloudwatch = var.log_backend == "cloudwatch"
+  is_loki       = var.log_backend == "loki"
+
+  # Build env vars based on backend — no Loki vars for CloudWatch, no CW vars for Loki
+  backend_env = local.is_cloudwatch ? [
+    { name = "LOG_BACKEND", value = "cloudwatch" },
+    { name = "AWS_REGION", value = var.region },
+    { name = "CW_LOG_GROUPS", value = var.cw_log_groups },
+  ] : [
+    { name = "LOG_BACKEND", value = "loki" },
+    { name = "LOKI_BASE_URL", value = var.loki_url },
+  ]
+
+  # Secrets: always Slack + Gemini, plus Loki API key only if Loki backend
+  base_secrets = [
+    { name = "SLACK_BOT_TOKEN", valueFrom = aws_ssm_parameter.slack_bot_token.arn },
+    { name = "SLACK_APP_TOKEN", valueFrom = aws_ssm_parameter.slack_app_token.arn },
+    { name = "GEMINI_API_KEY", valueFrom = aws_ssm_parameter.gemini_api_key.arn },
+  ]
+  loki_secrets = local.is_loki && var.loki_api_key != "" ? [
+    { name = "LOKI_API_KEY", valueFrom = aws_ssm_parameter.loki_api_key[0].arn },
+  ] : []
+  all_secrets = concat(local.base_secrets, local.loki_secrets)
+
+  # SSM ARNs for IAM policy
+  ssm_arns = concat(
+    [
+      aws_ssm_parameter.slack_bot_token.arn,
+      aws_ssm_parameter.slack_app_token.arn,
+      aws_ssm_parameter.gemini_api_key.arn,
+    ],
+    local.is_loki && var.loki_api_key != "" ? [aws_ssm_parameter.loki_api_key[0].arn] : [],
+  )
 }
 
 # -------------------------------------------------------------------
-# IAM — CloudWatch Logs read-only access for the task
+# IAM — CloudWatch Logs read-only (only for CloudWatch backend)
 # -------------------------------------------------------------------
-
-data "aws_iam_policy_document" "cloudwatch_logs" {
-  statement {
-    effect = "Allow"
-    actions = [
-      "logs:StartQuery",
-      "logs:GetQueryResults",
-      "logs:DescribeLogGroups",
-      "logs:FilterLogEvents",
-    ]
-    resources = ["arn:aws:logs:${var.region}:${local.account_id}:log-group:*"]
-  }
-}
 
 resource "aws_iam_policy" "cloudwatch_logs" {
+  count  = local.is_cloudwatch ? 1 : 0
   name   = "${var.name}-cloudwatch-logs"
-  policy = data.aws_iam_policy_document.cloudwatch_logs.json
   tags   = var.tags
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect = "Allow"
+      Action = [
+        "logs:StartQuery",
+        "logs:GetQueryResults",
+        "logs:DescribeLogGroups",
+        "logs:FilterLogEvents",
+      ]
+      Resource = "arn:aws:logs:${var.region}:${local.account_id}:log-group:*"
+    }]
+  })
 }
 
 data "aws_iam_policy_document" "ecs_assume" {
@@ -53,7 +87,7 @@ data "aws_iam_policy_document" "ecs_assume" {
   }
 }
 
-# Task execution role (pulls images, writes logs)
+# Task execution role (pulls images, writes logs, reads SSM)
 resource "aws_iam_role" "execution" {
   name               = "${var.name}-execution"
   assume_role_policy = data.aws_iam_policy_document.ecs_assume.json
@@ -73,8 +107,9 @@ resource "aws_iam_role" "task" {
 }
 
 resource "aws_iam_role_policy_attachment" "task_cloudwatch" {
+  count      = local.is_cloudwatch ? 1 : 0
   role       = aws_iam_role.task.name
-  policy_arn = aws_iam_policy.cloudwatch_logs.arn
+  policy_arn = aws_iam_policy.cloudwatch_logs[0].arn
 }
 
 # -------------------------------------------------------------------
@@ -138,22 +173,13 @@ resource "aws_ecs_task_definition" "this" {
       image     = var.image
       essential = true
 
-      environment = [
-        { name = "LOG_BACKEND", value = var.log_backend },
-        { name = "AWS_REGION", value = var.region },
-        { name = "CW_LOG_GROUPS", value = var.cw_log_groups },
-        { name = "LOKI_BASE_URL", value = var.loki_url },
+      environment = concat(local.backend_env, [
         { name = "GEMINI_MODEL", value = var.gemini_model },
         { name = "HEALTH_ADDR", value = ":8080" },
         { name = "LOG_LEVEL", value = "info" },
-      ]
+      ])
 
-      secrets = [
-        { name = "SLACK_BOT_TOKEN", valueFrom = aws_ssm_parameter.slack_bot_token.arn },
-        { name = "SLACK_APP_TOKEN", valueFrom = aws_ssm_parameter.slack_app_token.arn },
-        { name = "GEMINI_API_KEY", valueFrom = aws_ssm_parameter.gemini_api_key.arn },
-        { name = "LOKI_API_KEY", valueFrom = aws_ssm_parameter.loki_api_key.arn },
-      ]
+      secrets = local.all_secrets
 
       portMappings = [
         { containerPort = 8080, protocol = "tcp" }
@@ -204,15 +230,17 @@ resource "aws_ssm_parameter" "gemini_api_key" {
   tags  = var.tags
 }
 
+# Only created when using Loki backend with an API key
 resource "aws_ssm_parameter" "loki_api_key" {
+  count = local.is_loki && var.loki_api_key != "" ? 1 : 0
   name  = "/${var.name}/loki-api-key"
   type  = "SecureString"
-  value = var.loki_api_key != "" ? var.loki_api_key : "unused"
+  value = var.loki_api_key
   tags  = var.tags
 }
 
 # -------------------------------------------------------------------
-# ECS Service — runs the task with auto-restart
+# ECS Service
 # -------------------------------------------------------------------
 
 resource "aws_ecs_service" "this" {
@@ -250,24 +278,16 @@ resource "aws_ecs_service" "this" {
 # IAM — allow execution role to read SSM secrets
 # -------------------------------------------------------------------
 
-data "aws_iam_policy_document" "ssm_read" {
-  statement {
-    effect = "Allow"
-    actions = [
-      "ssm:GetParameters",
-      "ssm:GetParameter",
-    ]
-    resources = [
-      aws_ssm_parameter.slack_bot_token.arn,
-      aws_ssm_parameter.slack_app_token.arn,
-      aws_ssm_parameter.gemini_api_key.arn,
-      aws_ssm_parameter.loki_api_key.arn,
-    ]
-  }
-}
-
 resource "aws_iam_role_policy" "execution_ssm" {
-  name   = "${var.name}-ssm-read"
-  role   = aws_iam_role.execution.id
-  policy = data.aws_iam_policy_document.ssm_read.json
+  name = "${var.name}-ssm-read"
+  role = aws_iam_role.execution.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect   = "Allow"
+      Action   = ["ssm:GetParameters", "ssm:GetParameter"]
+      Resource = local.ssm_arns
+    }]
+  })
 }
