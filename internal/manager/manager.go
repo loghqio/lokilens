@@ -155,6 +155,16 @@ func (m *BotManager) startBundle(ctx context.Context, ws *store.Workspace) error
 		return fmt.Errorf("building log source for workspace %s: %w", ws.WorkspaceID, err)
 	}
 
+	// Validate backend connectivity
+	checkCtx, checkCancel := context.WithTimeout(ctx, 10*time.Second)
+	if err := source.HealthCheck(checkCtx); err != nil {
+		checkCancel()
+		wsLogger.Error("log backend health check failed", "backend", source.Name(), "error", err)
+		return fmt.Errorf("backend health check for workspace %s: %w", ws.WorkspaceID, err)
+	}
+	checkCancel()
+	wsLogger.Info("log backend connected", "backend", source.Name())
+
 	// Determine Gemini backend: workspace-specific API key, or platform's Vertex AI / shared key
 	agentCfg := &config.Config{
 		GeminiModel:  m.geminiModel,

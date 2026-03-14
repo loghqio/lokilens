@@ -50,13 +50,35 @@ func (s *CloudWatchSource) Description() string {
 func (s *CloudWatchSource) Instruction() string { return systemInstruction }
 
 func (s *CloudWatchSource) HealthCheck(ctx context.Context) error {
+	// Verify we can reach CloudWatch at all
 	groups, err := s.client.ListLogGroups(ctx, "")
 	if err != nil {
 		return fmt.Errorf("cloudwatch unreachable: %w", err)
 	}
-	if len(s.logGroups) > 0 && len(groups) == 0 {
-		return fmt.Errorf("cloudwatch returned 0 log groups — check IAM permissions")
+
+	if len(s.logGroups) == 0 {
+		// No log groups configured — queries will fail
+		if len(groups) == 0 {
+			return fmt.Errorf("no log groups found and CW_LOG_GROUPS not set — set CW_LOG_GROUPS or check IAM permissions")
+		}
+		return fmt.Errorf("CW_LOG_GROUPS not set — set it to a comma-separated list of log groups (found %d groups in account, e.g. %s)", len(groups), groups[0])
 	}
+
+	// Verify configured log groups actually exist
+	existing := make(map[string]bool, len(groups))
+	for _, g := range groups {
+		existing[g] = true
+	}
+	var missing []string
+	for _, g := range s.logGroups {
+		if !existing[g] {
+			missing = append(missing, g)
+		}
+	}
+	if len(missing) > 0 {
+		return fmt.Errorf("configured log groups not found: %v — check names and IAM permissions", missing)
+	}
+
 	return nil
 }
 

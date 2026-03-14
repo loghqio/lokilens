@@ -223,6 +223,17 @@ resource "aws_ecs_service" "this" {
   launch_type     = "FARGATE"
   tags            = var.tags
 
+  lifecycle {
+    precondition {
+      condition     = var.log_backend != "cloudwatch" || var.cw_log_groups != ""
+      error_message = "cw_log_groups is required when log_backend is 'cloudwatch'."
+    }
+    precondition {
+      condition     = var.log_backend != "loki" || var.loki_url != ""
+      error_message = "loki_url is required when log_backend is 'loki'."
+    }
+  }
+
   network_configuration {
     subnets          = var.subnet_ids
     security_groups  = [aws_security_group.task.id]

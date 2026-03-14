@@ -28,7 +28,7 @@ variable "log_backend" {
 }
 
 variable "cw_log_groups" {
-  description = "Comma-separated CloudWatch log group names to query"
+  description = "Comma-separated CloudWatch log group names to query (required when log_backend = 'cloudwatch')"
   type        = string
   default     = ""
 }
@@ -36,7 +36,7 @@ variable "cw_log_groups" {
 # -- Loki (only if log_backend = 'loki') --
 
 variable "loki_url" {
-  description = "Loki base URL (only if log_backend = 'loki')"
+  description = "Loki base URL (required when log_backend = 'loki')"
   type        = string
   default     = ""
 }
