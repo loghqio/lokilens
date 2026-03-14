@@ -113,13 +113,31 @@ func (a *Agent) EnsureSession(ctx context.Context, userID, sessionID string) err
 	return nil
 }
 
+// FileInput represents a file (image, video, etc.) to include in the agent request.
+type FileInput struct {
+	MimeType string
+	Data     []byte
+	Name     string
+}
+
 // Run executes the agent for a user message and returns the final text response.
-func (a *Agent) Run(ctx context.Context, userID, sessionID, text string) (string, error) {
+func (a *Agent) Run(ctx context.Context, userID, sessionID, text string, files []FileInput) (string, error) {
 	if err := a.EnsureSession(ctx, userID, sessionID); err != nil {
 		return "", err
 	}
 
-	msg := genai.NewContentFromText(text, genai.RoleUser)
+	// Build multimodal content: text + any attached files
+	var parts []*genai.Part
+	if text != "" {
+		parts = append(parts, genai.NewPartFromText(text))
+	}
+	for _, f := range files {
+		parts = append(parts, genai.NewPartFromBytes(f.Data, f.MimeType))
+	}
+	if len(parts) == 0 {
+		parts = append(parts, genai.NewPartFromText(""))
+	}
+	msg := genai.NewContentFromParts(parts, genai.RoleUser)
 
 	var finalText strings.Builder
 	for event, err := range a.Runner.Run(ctx, userID, sessionID, msg, agent.RunConfig{}) {

@@ -78,7 +78,7 @@ func main() {
 		}
 
 		fmt.Println()
-		response, err := agent.Run(ctx, userID, sessionID, text)
+		response, err := agent.Run(ctx, userID, sessionID, text, nil)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "ERROR: %v\n", err)
 			continue

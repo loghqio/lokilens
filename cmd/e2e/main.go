@@ -110,7 +110,7 @@ func main() {
 
 		sessionID := fmt.Sprintf("e2e-%d", i)
 		start := time.Now()
-		response, err := agent.Run(scCtx, "e2e-user", sessionID, sc.Query)
+		response, err := agent.Run(scCtx, "e2e-user", sessionID, sc.Query, nil)
 		duration := time.Since(start)
 		scCancel()
 

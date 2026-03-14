@@ -23,7 +23,15 @@ const (
 	maxTrackedThreads  = 5000
 	maxTrackedSessions = 5000
 	maxMessageLength   = 4000 // Slack's own message limit
+	maxAttachmentSize  = 10 * 1024 * 1024 // 10MB per file
 )
+
+// Attachment represents a file uploaded with a Slack message.
+type Attachment struct {
+	MimeType string
+	Data     []byte
+	Name     string
+}
 
 // UsageChecker enforces daily query limits for free-tier workspaces.
 type UsageChecker interface {
@@ -92,7 +100,7 @@ func NewHandler(cfg HandlerConfig) *Handler {
 
 // HandleMessage processes an incoming user message.
 // source identifies how the message arrived: "dm", "mention", or "thread_followup".
-func (h *Handler) HandleMessage(ctx context.Context, channel, userID, text, threadTS, messageTS, source string) {
+func (h *Handler) HandleMessage(ctx context.Context, channel, userID, text, threadTS, messageTS, source string, attachments []Attachment) {
 	// Determine the thread to reply in
 	replyTS := threadTS
 	if replyTS == "" {
@@ -125,13 +133,15 @@ func (h *Handler) HandleMessage(ctx context.Context, channel, userID, text, thre
 	// These cost zero API, zero Loki, zero conversation turns.
 	// Also catches empty mentions (@LokiLens with no text) and "help" —
 	// both must work even when the AI backend is down.
+	// Skip quick replies when files are attached — the user wants
+	// the LLM to process the file, even if the text is just "hello".
 	//
 	// Use threadTS != "" (not source == "thread_followup") to detect threads.
 	// DM thread replies arrive as source="dm" and @mention thread replies as
 	// source="mention" — both need inThread=true so that "yeah" in response
 	// to "Want me to dig deeper?" reaches the LLM instead of being
 	// short-circuited as gratitude.
-	if reply, ok := quickReplyFor(text, threadTS != ""); ok {
+	if reply, ok := quickReplyFor(text, threadTS != ""); ok && len(attachments) == 0 {
 		h.postMessage(channel, replyTS, reply, FormatQuickReply(reply))
 		return
 	}
@@ -185,7 +195,17 @@ func (h *Handler) HandleMessage(ctx context.Context, channel, userID, text, thre
 	agentCtx, cancel := context.WithTimeout(ctx, agentTimeout)
 	defer cancel()
 
-	response, err := h.agent.Run(agentCtx, userID, sessionID, text)
+	// Convert attachments to agent format
+	var agentFiles []agentpkg.FileInput
+	for _, att := range attachments {
+		agentFiles = append(agentFiles, agentpkg.FileInput{
+			MimeType: att.MimeType,
+			Data:     att.Data,
+			Name:     att.Name,
+		})
+	}
+
+	response, err := h.agent.Run(agentCtx, userID, sessionID, text, agentFiles)
 	durationMS := time.Since(start).Milliseconds()
 
 	if err != nil {
@@ -518,8 +538,15 @@ func (h *Handler) updateMessage(channel, timestamp, fallbackText string, blocks 
 }
 
 // IsBotMessage returns true if the message should be ignored (bot messages, subtypes).
+// file_share is allowed through so the bot can process uploaded images and files.
 func IsBotMessage(botID, subType string) bool {
-	return botID != "" || subType != ""
+	if botID != "" {
+		return true
+	}
+	if subType == "" || subType == "file_share" {
+		return false
+	}
+	return true
 }
 
 // IsDM returns true if the channel is a direct message channel.
