@@ -209,10 +209,12 @@ func (w *Wizard) sendGeminiChoice(api *slack.Client, workspaceID, userID string)
 		),
 	}
 
-	_, _, _ = api.PostMessage(channel.ID,
+	if _, _, err = api.PostMessage(channel.ID,
 		slack.MsgOptionBlocks(blocks...),
 		slack.MsgOptionText("Choose your Gemini API key setup.", false),
-	)
+	); err != nil {
+		w.logger.Error("failed to send gemini choice message", "workspace", workspaceID, "error", err)
+	}
 }
 
 // OpenGeminiConfigModal opens a modal for Gemini API key input.
@@ -317,10 +319,12 @@ func (w *Wizard) sendCompletionMessage(api *slack.Client, workspaceID, userID st
 		),
 	}
 
-	_, _, _ = api.PostMessage(channel.ID,
+	if _, _, err = api.PostMessage(channel.ID,
 		slack.MsgOptionBlocks(blocks...),
 		slack.MsgOptionText("LokiLens is ready! Try asking about your logs.", false),
-	)
+	); err != nil {
+		w.logger.Error("failed to send setup completion message", "workspace", workspaceID, "user", userID, "error", err)
+	}
 }
 
 // validateLokiURL checks that a user-supplied Loki URL is safe to connect to.

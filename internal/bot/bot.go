@@ -226,7 +226,9 @@ var supportedMimeTypes = map[string]bool{
 }
 
 // fetchAttachments downloads files from a Slack message for multimodal processing.
-func (b *Bot) fetchAttachments(channel, messageTS string) []Attachment {
+// Returns the downloaded attachments and descriptions of any files that were skipped
+// (unsupported type, too large, download failure) so the agent knows about them.
+func (b *Bot) fetchAttachments(channel, messageTS string) ([]Attachment, []string) {
 	resp, err := b.api.GetConversationHistory(&slack.GetConversationHistoryParameters{
 		ChannelID: channel,
 		Latest:    messageTS,
@@ -235,22 +237,25 @@ func (b *Bot) fetchAttachments(channel, messageTS string) []Attachment {
 		Limit:     1,
 	})
 	if err != nil || len(resp.Messages) == 0 {
-		return nil
+		return nil, nil
 	}
 
 	files := resp.Messages[0].Files
 	if len(files) == 0 {
-		return nil
+		return nil, nil
 	}
 
 	var attachments []Attachment
+	var skipped []string
 	for _, f := range files {
 		if !supportedMimeTypes[f.Mimetype] {
 			b.logger.Info("skipping unsupported file type", "name", f.Name, "mimetype", f.Mimetype)
+			skipped = append(skipped, fmt.Sprintf("file %q skipped: unsupported type %s", f.Name, f.Mimetype))
 			continue
 		}
 		if f.Size > maxAttachmentSize {
 			b.logger.Info("skipping oversized file", "name", f.Name, "size", f.Size)
+			skipped = append(skipped, fmt.Sprintf("file %q skipped: exceeds %dMB size limit", f.Name, maxAttachmentSize/(1024*1024)))
 			continue
 		}
 
@@ -259,12 +264,14 @@ func (b *Bot) fetchAttachments(channel, messageTS string) []Attachment {
 			url = f.URLPrivate
 		}
 		if url == "" {
+			skipped = append(skipped, fmt.Sprintf("file %q skipped: no download URL available", f.Name))
 			continue
 		}
 
 		var buf bytes.Buffer
 		if err := b.api.GetFileContext(context.Background(), url, &buf); err != nil {
 			b.logger.Error("failed to download file", "name", f.Name, "error", err)
+			skipped = append(skipped, fmt.Sprintf("file %q could not be downloaded", f.Name))
 			continue
 		}
 
@@ -276,7 +283,7 @@ func (b *Bot) fetchAttachments(channel, messageTS string) []Attachment {
 		b.logger.Info("downloaded attachment", "name", f.Name, "mimetype", f.Mimetype, "size", buf.Len())
 	}
 
-	return attachments
+	return attachments, skipped
 }
 
 func (b *Bot) onConnecting(evt *socketmode.Event, client *socketmode.Client) {
@@ -316,7 +323,10 @@ func (b *Bot) onAppMention(evt *socketmode.Event, client *socketmode.Client) {
 	query := StripMention(mention.Text)
 
 	// Fetch any file attachments from the message
-	attachments := b.fetchAttachments(mention.Channel, mention.TimeStamp)
+	attachments, skipped := b.fetchAttachments(mention.Channel, mention.TimeStamp)
+	if len(skipped) > 0 {
+		query += "\n\n[System: some attached files could not be processed: " + strings.Join(skipped, "; ") + "]"
+	}
 
 	// Don't drop empty queries — handler.quickReplyFor("") returns a greeting.
 	// Silently ignoring @LokiLens with no text looks like the bot is broken.
@@ -356,7 +366,11 @@ func (b *Bot) onMessage(evt *socketmode.Event, client *socketmode.Client) {
 		text := StripMention(msgEvent.Text)
 		var attachments []Attachment
 		if hasFiles {
-			attachments = b.fetchAttachments(msgEvent.Channel, msgEvent.TimeStamp)
+			var skipped []string
+			attachments, skipped = b.fetchAttachments(msgEvent.Channel, msgEvent.TimeStamp)
+			if len(skipped) > 0 {
+				text += "\n\n[System: some attached files could not be processed: " + strings.Join(skipped, "; ") + "]"
+			}
 		}
 		// Don't drop empty text — handler.quickReplyFor("") returns a greeting.
 		b.dispatch(msgEvent.Channel, msgEvent.User, text, msgEvent.ThreadTimeStamp, msgEvent.TimeStamp, "dm", attachments)
@@ -374,11 +388,16 @@ func (b *Bot) onMessage(evt *socketmode.Event, client *socketmode.Client) {
 			return
 		}
 		b.logger.Info("thread_followup received", "user", msgEvent.User, "channel", msgEvent.Channel, "text", msgEvent.Text, "has_files", hasFiles)
+		followupText := msgEvent.Text
 		var attachments []Attachment
 		if hasFiles {
-			attachments = b.fetchAttachments(msgEvent.Channel, msgEvent.TimeStamp)
+			var skipped []string
+			attachments, skipped = b.fetchAttachments(msgEvent.Channel, msgEvent.TimeStamp)
+			if len(skipped) > 0 {
+				followupText += "\n\n[System: some attached files could not be processed: " + strings.Join(skipped, "; ") + "]"
+			}
 		}
-		b.dispatch(msgEvent.Channel, msgEvent.User, msgEvent.Text, msgEvent.ThreadTimeStamp, msgEvent.TimeStamp, "thread_followup", attachments)
+		b.dispatch(msgEvent.Channel, msgEvent.User, followupText, msgEvent.ThreadTimeStamp, msgEvent.TimeStamp, "thread_followup", attachments)
 		return
 	}
 }

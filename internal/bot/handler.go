@@ -282,12 +282,21 @@ func (h *Handler) resolveThinking(channel, threadTS, thinkingTS, fallback string
 	if thinkingTS != "" {
 		if err := h.updateMessage(channel, thinkingTS, fallback, blocks); err != nil {
 			// Update failed — post as a new message rather than losing the response.
-			// This can happen if the thinking message was deleted, the bot lost
-			// permissions, or Slack had a transient error.
-			h.postMessage(channel, threadTS, fallback, blocks)
+			if postErr := h.postMessage(channel, threadTS, fallback, blocks); postErr != nil {
+				h.logger.Error("RESPONSE LOST: both update and post failed",
+					"update_error", err, "post_error", postErr,
+					"channel", channel, "thread", threadTS,
+					"response_length", len(fallback),
+				)
+			}
 		}
 	} else {
-		h.postMessage(channel, threadTS, fallback, blocks)
+		if err := h.postMessage(channel, threadTS, fallback, blocks); err != nil {
+			h.logger.Error("RESPONSE LOST: failed to deliver response",
+				"error", err, "channel", channel, "thread", threadTS,
+				"response_length", len(fallback),
+			)
+		}
 	}
 }
 
@@ -511,7 +520,7 @@ func (h *Handler) resolveSessionID(channel, threadTS string) string {
 	return fmt.Sprintf("%s:%s", channel, threadTS)
 }
 
-func (h *Handler) postMessage(channel, threadTS, fallbackText string, blocks []slack.Block) {
+func (h *Handler) postMessage(channel, threadTS, fallbackText string, blocks []slack.Block) error {
 	opts := []slack.MsgOption{
 		slack.MsgOptionBlocks(blocks...),
 		slack.MsgOptionText(fallbackText, false),
@@ -524,6 +533,7 @@ func (h *Handler) postMessage(channel, threadTS, fallbackText string, blocks []s
 	if err != nil {
 		h.logger.Error("failed to post message", "error", err, "channel", channel)
 	}
+	return err
 }
 
 func (h *Handler) updateMessage(channel, timestamp, fallbackText string, blocks []slack.Block) error {
