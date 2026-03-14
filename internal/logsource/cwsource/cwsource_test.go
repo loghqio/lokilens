@@ -2,6 +2,7 @@ package cwsource
 
 import (
 	"sort"
+	"strings"
 	"testing"
 	"time"
 
@@ -286,6 +287,94 @@ func TestAutoSelectStep(t *testing.T) {
 	step = agent.AutoSelectStep(now.Add(-6*time.Hour), now)
 	if step != "5m" {
 		t.Errorf("expected 5m for 6h range, got %s", step)
+	}
+}
+
+func TestSanitizeTimeRange_NormalRange(t *testing.T) {
+	now := time.Now()
+	start := now.Add(-1 * time.Hour)
+	end := now
+
+	s, e, warning := sanitizeTimeRange(start, end)
+	if warning != "" {
+		t.Errorf("expected no warning for normal range, got %q", warning)
+	}
+	if !s.Equal(start) || !e.Equal(end) {
+		t.Error("expected times unchanged for normal range")
+	}
+}
+
+func TestSanitizeTimeRange_SwappedTimes(t *testing.T) {
+	now := time.Now()
+	start := now                      // "start" is actually later
+	end := now.Add(-1 * time.Hour)    // "end" is actually earlier
+
+	s, e, warning := sanitizeTimeRange(start, end)
+	if warning == "" {
+		t.Fatal("expected warning for swapped times")
+	}
+	if !strings.Contains(warning, "swapped") {
+		t.Errorf("expected 'swapped' in warning, got %q", warning)
+	}
+	if !e.After(s) {
+		t.Error("expected end after start after swap")
+	}
+}
+
+func TestSanitizeTimeRange_ExceedsMaxRange(t *testing.T) {
+	now := time.Now()
+	start := now.Add(-7120 * time.Hour) // ~296 days ago — the exact scenario that burned us
+	end := now
+
+	s, e, warning := sanitizeTimeRange(start, end)
+	if warning == "" {
+		t.Fatal("expected warning for excessive range")
+	}
+	if !strings.Contains(warning, "clamped") {
+		t.Errorf("expected 'clamped' in warning, got %q", warning)
+	}
+	if e.Sub(s) > 24*time.Hour+time.Second {
+		t.Errorf("expected range clamped to ~24h, got %v", e.Sub(s))
+	}
+}
+
+func TestSanitizeTimeRange_FutureEndTime(t *testing.T) {
+	now := time.Now()
+	start := now.Add(-30 * time.Minute)
+	end := now.Add(1 * time.Hour) // future
+
+	_, e, _ := sanitizeTimeRange(start, end)
+	if e.After(time.Now().Add(1 * time.Second)) {
+		t.Error("expected end time capped at now")
+	}
+}
+
+func TestSanitizeTimeRange_EqualTimes(t *testing.T) {
+	now := time.Now()
+
+	s, e, warning := sanitizeTimeRange(now, now)
+	if warning == "" {
+		t.Fatal("expected warning for equal times")
+	}
+	if !e.After(s) {
+		t.Error("expected non-zero range after fix")
+	}
+}
+
+func TestSanitizeTimeRange_SwappedAndExcessive(t *testing.T) {
+	now := time.Now()
+	start := now                          // later
+	end := now.Add(-7120 * time.Hour)     // earlier and way too far back
+
+	s, e, warning := sanitizeTimeRange(start, end)
+	if !strings.Contains(warning, "swapped") {
+		t.Errorf("expected 'swapped' in warning, got %q", warning)
+	}
+	if !strings.Contains(warning, "clamped") {
+		t.Errorf("expected 'clamped' in warning, got %q", warning)
+	}
+	if e.Sub(s) > 24*time.Hour+time.Second {
+		t.Errorf("expected range clamped to ~24h, got %v", e.Sub(s))
 	}
 }
 
