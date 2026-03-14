@@ -53,7 +53,7 @@ func Load() (*Config, error) {
 		SlackBotToken:  os.Getenv("SLACK_BOT_TOKEN"),
 		SlackAppToken:  os.Getenv("SLACK_APP_TOKEN"),
 		GeminiAPIKey:   os.Getenv("GEMINI_API_KEY"),
-		GeminiModel:    envOrDefault("GEMINI_MODEL", "gemini-2.5-flash"),
+		GeminiModel:    envOrDefault("GEMINI_MODEL", "gemini-3.1-flash-lite-preview"),
 		LokiBaseURL:    os.Getenv("LOKI_BASE_URL"),
 		LokiAPIKey:     os.Getenv("LOKI_API_KEY"),
 		LokiTimeout:    envDuration("LOKI_TIMEOUT", 30*time.Second),
@@ -87,7 +87,7 @@ func LoadAgent() (*Config, error) {
 
 	cfg := &Config{
 		GeminiAPIKey:   os.Getenv("GEMINI_API_KEY"),
-		GeminiModel:    envOrDefault("GEMINI_MODEL", "gemini-2.5-flash"),
+		GeminiModel:    envOrDefault("GEMINI_MODEL", "gemini-3.1-flash-lite-preview"),
 		LokiBaseURL:    os.Getenv("LOKI_BASE_URL"),
 		LokiAPIKey:     os.Getenv("LOKI_API_KEY"),
 		LokiTimeout:    envDuration("LOKI_TIMEOUT", 30*time.Second),
