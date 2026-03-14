@@ -59,7 +59,7 @@ var systemInstruction = logsource.BuildInstruction(logsource.InstructionConfig{
   Use as a line filter across services. Set direction=forward for chronological order. Synthesize a request timeline: "Hit gateway at 14:31:02 → forwarded to orders at 14:31:03 → failed at payments at 14:31:05 with DB timeout"
 
 - *Raw LogQL* (` + "`" + `{service="payments"} |= "timeout"` + "`" + `):
-  Run it directly. If it fails, fix syntax and retry once. If no results, say so and suggest adjustments.
+  Run it directly. If it fails, fix syntax and retry once. If no results, follow the MANDATORY INVESTIGATION steps below — never tell the user "no logs found" without retrying.
 
 - *Specific log count* ("show me the last 5 errors"): Extract the number and use it as the limit.
 

@@ -345,9 +345,10 @@ func buildQueryLogsOutput(resp *loki.QueryResponse, query string, start, end tim
 
 	// When zero results, guide the model to investigate instead of giving up
 	if len(out.Logs) == 0 {
-		out.Warning = "ZERO RESULTS — do NOT tell the user there are no logs without investigating first. " +
-			"Try: (1) widen time range to 6h or 24h, (2) remove filters (use a bare selector like {service=~\".+\"}), " +
-			"(3) call get_labels to verify label names/values exist, (4) check for typos in label values."
+		out.Warning = "⚠️ MANDATORY: Do NOT respond to the user yet. You MUST retry at least 2 of these before saying anything about no logs: " +
+			"(1) widen time range to 6h or 24h, (2) remove filters (use a bare selector like {service=~\".+\"}), " +
+			"(3) call get_labels to verify label names/values exist, (4) check for typos in label values. " +
+			"Only after 2+ retries with zero results should you tell the user — and if truly empty, say it's suspicious (possible logging gap or service down), not 'no activity'."
 	}
 
 	return out, nil
@@ -399,9 +400,10 @@ func buildQueryStatsOutput(resp *loki.QueryResponse, query string, start, end ti
 
 	// When zero results, guide the model to investigate instead of giving up
 	if len(out.Series) == 0 {
-		out.Warning = "ZERO RESULTS — do NOT tell the user there are no logs without investigating first. " +
-			"Try: (1) widen time range to 6h or 24h, (2) simplify the query, " +
-			"(3) call get_labels to verify label names/values exist."
+		out.Warning = "⚠️ MANDATORY: Do NOT respond to the user yet. You MUST retry at least 2 of these before saying anything about no logs: " +
+			"(1) widen time range to 6h or 24h, (2) simplify the query, " +
+			"(3) call get_labels to verify label names/values exist. " +
+			"Only after 2+ retries with zero results should you tell the user — and if truly empty, say it's suspicious (possible logging gap or service down), not 'no activity'."
 	}
 
 	return out, nil
