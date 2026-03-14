@@ -495,8 +495,8 @@ func TestQueryLogs_ZeroResults(t *testing.T) {
 	if out.Warning == "" {
 		t.Error("expected warning for zero results")
 	}
-	if !strings.Contains(out.Warning, "ZERO RESULTS") {
-		t.Errorf("expected ZERO RESULTS in warning, got: %s", truncate(out.Warning, 100))
+	if !strings.Contains(out.Warning, "MANDATORY") {
+		t.Errorf("expected MANDATORY retry warning, got: %s", truncate(out.Warning, 100))
 	}
 }
 
