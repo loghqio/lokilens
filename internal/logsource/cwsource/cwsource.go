@@ -201,6 +201,9 @@ func (s *CloudWatchSource) queryLogs(ctx context.Context, input QueryLogsInput) 
 		return agent.QueryLogsOutput{}, err
 	}
 
+	// Defensive time handling: swap if reversed, clamp to 24h max
+	startTime, endTime, warning := sanitizeTimeRange(startTime, endTime)
+
 	limit := input.Limit
 	if limit <= 0 {
 		limit = 100
@@ -242,6 +245,7 @@ func (s *CloudWatchSource) queryLogs(ctx context.Context, input QueryLogsInput) 
 		Direction: direction,
 		Logs:      make([]agent.LogEntry, 0, len(result.Results)),
 		TimeRange: fmt.Sprintf("%s to %s", startTime.Format(time.RFC3339), endTime.Format(time.RFC3339)),
+		Warning:   warning,
 	}
 
 	for _, row := range result.Results {
@@ -386,6 +390,9 @@ func (s *CloudWatchSource) queryStats(ctx context.Context, input QueryStatsInput
 		return agent.QueryStatsOutput{}, err
 	}
 
+	// Defensive time handling: swap if reversed, clamp to 24h max
+	startTime, endTime, warning := sanitizeTimeRange(startTime, endTime)
+
 	step := input.Step
 	if step == "" {
 		step = agent.AutoSelectStep(startTime, endTime)
@@ -404,6 +411,7 @@ func (s *CloudWatchSource) queryStats(ctx context.Context, input QueryStatsInput
 		Step:      step,
 		Series:    make([]agent.MetricSeries, 0),
 		TimeRange: fmt.Sprintf("%s to %s", startTime.Format(time.RFC3339), endTime.Format(time.RFC3339)),
+		Warning:   warning,
 	}
 
 	// Parse CloudWatch Insights stats results into MetricSeries.
@@ -547,6 +555,40 @@ func (s *CloudWatchSource) parseGroupedResults(result *QueryResult) []agent.Metr
 	}
 
 	return series
+}
+
+// sanitizeTimeRange swaps start/end if reversed, clamps to 24h max, and ensures
+// times are not in the future. Returns corrected times and a warning if anything changed.
+func sanitizeTimeRange(start, end time.Time) (time.Time, time.Time, string) {
+	const maxRange = 24 * time.Hour
+	var warnings []string
+
+	// Swap if reversed
+	if end.Before(start) {
+		start, end = end, start
+		warnings = append(warnings, "start/end times were swapped")
+	}
+
+	// Ensure end is not in the future (CloudWatch has no future logs)
+	now := time.Now()
+	if end.After(now) {
+		end = now
+	}
+
+	// Clamp to max range
+	if end.Sub(start) > maxRange {
+		start = end.Add(-maxRange)
+		warnings = append(warnings, fmt.Sprintf("time range clamped to %s (maximum allowed)", maxRange))
+	}
+
+	// Ensure non-zero range
+	if !end.After(start) {
+		start = end.Add(-1 * time.Hour)
+		warnings = append(warnings, "defaulted to 1h time range")
+	}
+
+	warning := strings.Join(warnings, "; ")
+	return start, end, warning
 }
 
 func seriesKeyFromLabels(labels map[string]string) string {
