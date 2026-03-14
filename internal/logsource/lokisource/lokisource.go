@@ -1,6 +1,7 @@
 package lokisource
 
 import (
+	"context"
 	"fmt"
 
 	"google.golang.org/adk/tool"
@@ -28,6 +29,14 @@ func (s *LokiSource) Name() string        { return "Loki" }
 func (s *LokiSource) Instruction() string  { return systemInstruction }
 func (s *LokiSource) Description() string {
 	return "Log analysis assistant that queries Grafana Loki via natural language"
+}
+
+func (s *LokiSource) HealthCheck(ctx context.Context) error {
+	_, err := s.handlers.lokiClient.Labels(ctx, loki.LabelsRequest{})
+	if err != nil {
+		return fmt.Errorf("loki unreachable: %w", err)
+	}
+	return nil
 }
 
 func (s *LokiSource) Tools() ([]tool.Tool, error) {

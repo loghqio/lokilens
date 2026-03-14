@@ -1,0 +1,27 @@
+# Required — AWS
+region     = "us-east-1"
+vpc_id     = "vpc-0abc123def456"
+subnet_ids = ["subnet-0aaa", "subnet-0bbb"]
+
+# Required — Log backend
+log_backend   = "cloudwatch"
+cw_log_groups = "/aws/ecs/payments,/aws/lambda/orders"
+
+# Required — Slack (create app at https://api.slack.com/apps)
+slack_bot_token = "xoxb-your-bot-token"
+slack_app_token = "xapp-your-app-token"
+
+# Required — Gemini (get key at https://aistudio.google.com/apikey)
+gemini_api_key = "your-gemini-api-key"
+
+# Optional
+# gemini_model = "gemini-2.5-flash"
+# image        = "loghqio/lokilens:latest"
+# cpu          = 256
+# memory       = 512
+# tags         = { team = "platform", env = "production" }
+
+# For Loki backend instead:
+# log_backend  = "loki"
+# loki_url     = "https://loki.example.com"
+# loki_api_key = "your-loki-key"

@@ -1,6 +1,10 @@
 package logsource
 
-import "google.golang.org/adk/tool"
+import (
+	"context"
+
+	"google.golang.org/adk/tool"
+)
 
 // LogSource is the plugin interface for log backends.
 // Each implementation provides backend-specific tools and system instruction
@@ -17,4 +21,8 @@ type LogSource interface {
 
 	// Description returns a short description for the ADK agent config.
 	Description() string
+
+	// HealthCheck verifies connectivity to the log backend.
+	// Returns nil if healthy, or an error describing the problem.
+	HealthCheck(ctx context.Context) error
 }

@@ -8,7 +8,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/lokilens/lokilens/internal/loki"
+	"github.com/lokilens/lokilens/internal/logsource"
 )
 
 // LicenseCheck is an optional interface for reporting license status.
@@ -20,16 +20,16 @@ type LicenseCheck interface {
 // Server exposes /healthz and /readyz endpoints for orchestration probes.
 type Server struct {
 	httpServer     *http.Server
-	lokiClient     loki.Client
+	source         logsource.LogSource
 	licenseChecker LicenseCheck
 	logger         *slog.Logger
-	lokiHealthy    atomic.Bool
+	backendHealthy atomic.Bool
 }
 
 // Config holds health server configuration.
 type Config struct {
 	Addr           string // e.g. ":8080"
-	LokiClient     loki.Client
+	Source         logsource.LogSource
 	LicenseChecker LicenseCheck // nil for dev tools
 	Logger         *slog.Logger
 }
@@ -37,11 +37,11 @@ type Config struct {
 // New creates a new health server with its own HTTP server.
 func New(cfg Config) *Server {
 	s := &Server{
-		lokiClient:     cfg.LokiClient,
+		source:         cfg.Source,
 		licenseChecker: cfg.LicenseChecker,
 		logger:         cfg.Logger,
 	}
-	s.lokiHealthy.Store(true) // optimistic start
+	s.backendHealthy.Store(true) // optimistic start
 
 	mux := http.NewServeMux()
 	s.RegisterRoutes(mux)
@@ -56,36 +56,17 @@ func New(cfg Config) *Server {
 	return s
 }
 
-// NewChecker creates a health server without its own HTTP listener.
-// Use RegisterRoutes to add health endpoints to an external mux,
-// and RunChecks to start background health checking.
-func NewChecker(lokiClient loki.Client, logger *slog.Logger) *Server {
-	s := &Server{
-		lokiClient: lokiClient,
-		logger:     logger,
-	}
-	s.lokiHealthy.Store(true)
-	return s
-}
-
 // RegisterRoutes registers health check handlers on the given mux.
 func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /healthz", s.handleHealthz)
 	mux.HandleFunc("GET /readyz", s.handleReadyz)
 }
 
-// RunChecks starts the background Loki health checker. Blocks until ctx is cancelled.
-func (s *Server) RunChecks(ctx context.Context) {
-	s.checkLokiLoop(ctx)
-}
-
-// Run starts the health server and a background Loki health checker.
+// Run starts the health server and a background backend health checker.
 // Blocks until the context is cancelled.
 func (s *Server) Run(ctx context.Context) error {
-	// Background Loki health check
-	go s.checkLokiLoop(ctx)
+	go s.checkBackendLoop(ctx)
 
-	// Start HTTP server
 	go func() {
 		s.logger.Info("health server starting", "addr", s.httpServer.Addr)
 		if err := s.httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
@@ -114,8 +95,8 @@ func (s *Server) handleReadyz(w http.ResponseWriter, r *http.Request) {
 	status := "ok"
 	code := http.StatusOK
 
-	if !s.lokiHealthy.Load() {
-		status = "loki_unhealthy"
+	if !s.backendHealthy.Load() {
+		status = "backend_unhealthy"
 		code = http.StatusServiceUnavailable
 	}
 
@@ -127,37 +108,36 @@ func (s *Server) handleReadyz(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, code, map[string]string{"status": status})
 }
 
-// checkLokiLoop periodically checks if Loki is reachable.
-func (s *Server) checkLokiLoop(ctx context.Context) {
+// checkBackendLoop periodically checks if the log backend is reachable.
+func (s *Server) checkBackendLoop(ctx context.Context) {
 	ticker := time.NewTicker(15 * time.Second)
 	defer ticker.Stop()
 
-	// Check immediately on startup
-	s.checkLoki(ctx)
+	s.checkBackend(ctx)
 
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			s.checkLoki(ctx)
+			s.checkBackend(ctx)
 		}
 	}
 }
 
-func (s *Server) checkLoki(ctx context.Context) {
-	if s.lokiClient == nil {
-		s.lokiHealthy.Store(true) // no Loki backend to check
+func (s *Server) checkBackend(ctx context.Context) {
+	if s.source == nil {
+		s.backendHealthy.Store(true)
 		return
 	}
 
 	checkCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 
-	_, err := s.lokiClient.Labels(checkCtx, loki.LabelsRequest{})
-	s.lokiHealthy.Store(err == nil)
+	err := s.source.HealthCheck(checkCtx)
+	s.backendHealthy.Store(err == nil)
 	if err != nil {
-		s.logger.Warn("loki health check failed", "error", err)
+		s.logger.Warn("backend health check failed", "backend", s.source.Name(), "error", err)
 	}
 }
 

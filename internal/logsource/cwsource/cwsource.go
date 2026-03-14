@@ -49,6 +49,17 @@ func (s *CloudWatchSource) Description() string {
 }
 func (s *CloudWatchSource) Instruction() string { return systemInstruction }
 
+func (s *CloudWatchSource) HealthCheck(ctx context.Context) error {
+	groups, err := s.client.ListLogGroups(ctx, "")
+	if err != nil {
+		return fmt.Errorf("cloudwatch unreachable: %w", err)
+	}
+	if len(s.logGroups) > 0 && len(groups) == 0 {
+		return fmt.Errorf("cloudwatch returned 0 log groups — check IAM permissions")
+	}
+	return nil
+}
+
 // Tool input types
 
 type QueryLogsInput struct {

@@ -66,7 +66,6 @@ func runSingleTenant(ctx context.Context, cfg *config.Config, logger *slog.Logge
 
 	// Build log source based on backend
 	var source logsource.LogSource
-	var lokiClient loki.Client // may be nil for non-Loki backends
 
 	if cfg.IsCloudWatch() {
 		var logGroups []string
@@ -89,7 +88,7 @@ func runSingleTenant(ctx context.Context, cfg *config.Config, logger *slog.Logge
 		}
 		source = cwSource
 	} else {
-		lokiClient = loki.NewHTTPClient(loki.ClientConfig{
+		lokiClient := loki.NewHTTPClient(loki.ClientConfig{
 			BaseURL:    cfg.LokiBaseURL,
 			APIKey:     cfg.LokiAPIKey,
 			Timeout:    cfg.LokiTimeout,
@@ -100,6 +99,16 @@ func runSingleTenant(ctx context.Context, cfg *config.Config, logger *slog.Logge
 		source = lokisource.New(lokiClient, validator, auditLogger)
 	}
 
+	// Validate backend connectivity before starting
+	checkCtx, checkCancel := context.WithTimeout(ctx, 10*time.Second)
+	if err := source.HealthCheck(checkCtx); err != nil {
+		checkCancel()
+		logger.Error("log backend health check failed", "backend", source.Name(), "error", err)
+		os.Exit(1)
+	}
+	checkCancel()
+	logger.Info("log backend connected", "backend", source.Name())
+
 	// ADK agent
 	agent, err := agentpkg.New(ctx, cfg, source, auditLogger, logger)
 	if err != nil {
@@ -108,14 +117,11 @@ func runSingleTenant(ctx context.Context, cfg *config.Config, logger *slog.Logge
 	}
 
 	// Health server for Kubernetes probes
-	healthCfg := health.Config{
+	healthSrv := health.New(health.Config{
 		Addr:   cfg.HealthAddr,
+		Source: source,
 		Logger: logger,
-	}
-	if lokiClient != nil {
-		healthCfg.LokiClient = lokiClient
-	}
-	healthSrv := health.New(healthCfg)
+	})
 	go healthSrv.Run(ctx)
 
 	// Slack bot
