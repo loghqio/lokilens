@@ -23,15 +23,17 @@ type CloudWatchSource struct {
 
 // Config holds configuration for creating a CloudWatchSource.
 type Config struct {
-	Region    string
-	LogGroups []string // pre-configured log groups (empty = discover via API)
-	Audit     *audit.Logger
+	Region      string
+	LogGroups   []string // pre-configured log groups (empty = discover via API)
+	Audit       *audit.Logger
+	EndpointURL string // optional: custom endpoint (e.g., LocalStack for testing)
 }
 
 // New creates a CloudWatchSource.
 func New(ctx context.Context, cfg Config) (*CloudWatchSource, error) {
 	client, err := NewClient(ctx, ClientConfig{
-		Region: cfg.Region,
+		Region:      cfg.Region,
+		EndpointURL: cfg.EndpointURL,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("creating cloudwatch client: %w", err)
@@ -124,7 +126,7 @@ func (s *CloudWatchSource) Tools() ([]tool.Tool, error) {
 		Name:        "query_logs",
 		Description: "Fetch raw log lines from CloudWatch Logs with automatic pattern analysis. Runs a CloudWatch Insights query and returns individual log entries plus top_patterns (grouped similar lines with counts and pct), total_patterns, unique_labels (nested label distribution), and direction. Use this when you need actual log messages, error details, or stack traces. The top_patterns field lets you immediately identify the dominant error type — use the pct field to say e.g. '78% of errors are timeouts'. NOT for counting or aggregation over time — use query_stats for that.",
 	}, func(ctx tool.Context, input QueryLogsInput) (agent.QueryLogsOutput, error) {
-		return s.queryLogs(ctx, input)
+		return s.QueryLogs(ctx, input)
 	})
 	if err != nil {
 		return nil, fmt.Errorf("creating query_logs tool: %w", err)
@@ -134,7 +136,7 @@ func (s *CloudWatchSource) Tools() ([]tool.Tool, error) {
 		Name:        "list_log_groups",
 		Description: "List available CloudWatch log groups. Call this FIRST in any new conversation to discover which log groups exist. Each log group typically corresponds to a service, application, or AWS resource. Use the results to pick the right log groups for queries. Optionally filter by prefix (e.g. '/aws/lambda/' or '/ecs/').",
 	}, func(ctx tool.Context, input ListLogGroupsInput) (ListLogGroupsOutput, error) {
-		return s.listLogGroups(ctx, input)
+		return s.ListLogGroups(ctx, input)
 	})
 	if err != nil {
 		return nil, fmt.Errorf("creating list_log_groups tool: %w", err)
@@ -144,7 +146,7 @@ func (s *CloudWatchSource) Tools() ([]tool.Tool, error) {
 		Name:        "get_log_fields",
 		Description: "Discover the fields available in one or more log groups. After calling list_log_groups, call this to learn which fields exist (e.g. level, service, statusCode, @duration, @message). Essential for building correct Insights queries — using a field that doesn't exist returns 0 results.",
 	}, func(ctx tool.Context, input GetLogFieldsInput) (GetLogFieldsOutput, error) {
-		return s.getLogFields(ctx, input)
+		return s.GetLogFields(ctx, input)
 	})
 	if err != nil {
 		return nil, fmt.Errorf("creating get_log_fields tool: %w", err)
@@ -154,7 +156,7 @@ func (s *CloudWatchSource) Tools() ([]tool.Tool, error) {
 		Name:        "query_stats",
 		Description: "Run aggregation queries on CloudWatch Logs to get counts, rates, and trends over time with automatic trend analysis. Returns time-series data plus summaries with pre-computed total, avg, avg_per_minute (already normalized — use directly for user-facing rates), latest, peak, peak_time, trend direction, and non_zero_pct. Use this for 'how many errors?', 'error rate trend', 'compare periods', 'which service has the most errors?'. The summaries field gives instant verdicts without parsing data points. NOT for raw logs — use query_logs for actual log lines.",
 	}, func(ctx tool.Context, input QueryStatsInput) (agent.QueryStatsOutput, error) {
-		return s.queryStats(ctx, input)
+		return s.QueryStats(ctx, input)
 	})
 	if err != nil {
 		return nil, fmt.Errorf("creating query_stats tool: %w", err)
@@ -174,7 +176,7 @@ func (s *CloudWatchSource) resolveLogGroups(input []string) ([]string, error) {
 	return nil, fmt.Errorf("no log groups specified — call list_log_groups first to discover available groups")
 }
 
-func (s *CloudWatchSource) queryLogs(ctx context.Context, input QueryLogsInput) (agent.QueryLogsOutput, error) {
+func (s *CloudWatchSource) QueryLogs(ctx context.Context, input QueryLogsInput) (agent.QueryLogsOutput, error) {
 	start := time.Now()
 
 	if input.Query != "" {
@@ -318,7 +320,7 @@ func (s *CloudWatchSource) queryLogs(ctx context.Context, input QueryLogsInput) 
 	return out, nil
 }
 
-func (s *CloudWatchSource) listLogGroups(ctx context.Context, input ListLogGroupsInput) (ListLogGroupsOutput, error) {
+func (s *CloudWatchSource) ListLogGroups(ctx context.Context, input ListLogGroupsInput) (ListLogGroupsOutput, error) {
 	start := time.Now()
 
 	// If workspace has scoped log groups, return those
@@ -360,7 +362,7 @@ func (s *CloudWatchSource) listLogGroups(ctx context.Context, input ListLogGroup
 	}, nil
 }
 
-func (s *CloudWatchSource) getLogFields(ctx context.Context, input GetLogFieldsInput) (GetLogFieldsOutput, error) {
+func (s *CloudWatchSource) GetLogFields(ctx context.Context, input GetLogFieldsInput) (GetLogFieldsOutput, error) {
 	start := time.Now()
 
 	logGroups, err := s.resolveLogGroups(input.LogGroups)
@@ -384,7 +386,7 @@ func (s *CloudWatchSource) getLogFields(ctx context.Context, input GetLogFieldsI
 	}, nil
 }
 
-func (s *CloudWatchSource) queryStats(ctx context.Context, input QueryStatsInput) (agent.QueryStatsOutput, error) {
+func (s *CloudWatchSource) QueryStats(ctx context.Context, input QueryStatsInput) (agent.QueryStatsOutput, error) {
 	start := time.Now()
 
 	if err := validateInsightsQuery(input.Query); err != nil {

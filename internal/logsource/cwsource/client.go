@@ -20,8 +20,9 @@ type Client struct {
 
 // ClientConfig holds configuration for creating a CloudWatch client.
 type ClientConfig struct {
-	Region string
-	Logger *slog.Logger
+	Region      string
+	Logger      *slog.Logger
+	EndpointURL string // optional: custom endpoint (e.g., LocalStack for testing)
 }
 
 // NewClient creates a CloudWatch Logs client using the standard AWS credential chain.
@@ -40,8 +41,15 @@ func NewClient(ctx context.Context, cfg ClientConfig) (*Client, error) {
 		return nil, fmt.Errorf("loading AWS config: %w", err)
 	}
 
+	cwOpts := []func(*cloudwatchlogs.Options){}
+	if cfg.EndpointURL != "" {
+		cwOpts = append(cwOpts, func(o *cloudwatchlogs.Options) {
+			o.BaseEndpoint = aws.String(cfg.EndpointURL)
+		})
+	}
+
 	return &Client{
-		cw:     cloudwatchlogs.NewFromConfig(awsCfg),
+		cw:     cloudwatchlogs.NewFromConfig(awsCfg, cwOpts...),
 		logger: cfg.Logger,
 	}, nil
 }

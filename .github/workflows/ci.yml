@@ -22,7 +22,7 @@ jobs:
       - name: Test
         run: go test ./... -v -count=1
 
-  integration:
+  integration-loki:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -52,15 +52,14 @@ jobs:
         run: |
           echo "Waiting 20s for loggen to populate Loki..."
           sleep 20
-          # Verify logs exist
           LABELS=$(curl -sf http://localhost:3100/loki/api/v1/labels | grep -c "service" || true)
           if [ "$LABELS" -eq 0 ]; then
             echo "Warning: no 'service' label found yet, waiting 15s more..."
             sleep 15
           fi
 
-      - name: Run integration tests
-        run: go test -tags integration -v -count=1 -timeout 5m ./integration/...
+      - name: Run Loki integration tests
+        run: go test -tags integration -v -count=1 -timeout 5m -run '^Test[^C][^W]' ./integration/...
         env:
           LOKI_URL: http://localhost:3100
 
@@ -68,8 +67,51 @@ jobs:
         if: always()
         run: docker compose -f docker/docker-compose.yml down -v
 
+  integration-cw:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.25"
+
+      - name: Start LocalStack and CloudWatch log generator
+        run: docker compose -f docker/docker-compose.yml up -d localstack cwloggen
+
+      - name: Wait for LocalStack to be ready
+        run: |
+          for i in $(seq 1 30); do
+            if curl -sf http://localhost:4566/_localstack/health > /dev/null 2>&1; then
+              echo "LocalStack is ready"
+              exit 0
+            fi
+            echo "Waiting for LocalStack... ($i/30)"
+            sleep 2
+          done
+          echo "LocalStack failed to start"
+          docker compose -f docker/docker-compose.yml logs localstack
+          exit 1
+
+      - name: Wait for log ingestion
+        run: |
+          echo "Waiting 25s for cwloggen to populate CloudWatch..."
+          sleep 25
+
+      - name: Run CloudWatch integration tests
+        run: go test -tags integration -v -count=1 -timeout 5m -run '^TestCW' ./integration/...
+        env:
+          CW_ENDPOINT_URL: http://localhost:4566
+          AWS_ACCESS_KEY_ID: test
+          AWS_SECRET_ACCESS_KEY: test
+          AWS_REGION: us-east-1
+
+      - name: Teardown
+        if: always()
+        run: docker compose -f docker/docker-compose.yml down -v
+
   docker:
-    needs: [test, integration]
+    needs: [test, integration-loki, integration-cw]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     steps:
