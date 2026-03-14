@@ -22,9 +22,9 @@ func NewPostgresStore(databaseURL string, cipher *Cipher) (*PostgresStore, error
 		return nil, fmt.Errorf("opening database: %w", err)
 	}
 
-	db.SetMaxOpenConns(10)
-	db.SetMaxIdleConns(5)
-	db.SetConnMaxLifetime(5 * time.Minute)
+	db.SetMaxOpenConns(25)
+	db.SetMaxIdleConns(10)
+	db.SetConnMaxLifetime(10 * time.Minute)
 
 	if err := db.Ping(); err != nil {
 		db.Close()
@@ -54,8 +54,6 @@ func (s *PostgresStore) Migrate(ctx context.Context) error {
 		cw_log_groups      TEXT NOT NULL DEFAULT '',
 		gemini_api_key_enc BYTEA,
 		daily_query_limit    INT NOT NULL DEFAULT 100,
-		rate_limit_per_user  INT NOT NULL DEFAULT 20,
-		rate_limit_burst     INT NOT NULL DEFAULT 5,
 		max_time_range       TEXT NOT NULL DEFAULT '24h',
 		max_results          INT NOT NULL DEFAULT 500,
 		installed_by       TEXT NOT NULL DEFAULT '',
@@ -63,11 +61,6 @@ func (s *PostgresStore) Migrate(ctx context.Context) error {
 		created_at         TIMESTAMPTZ NOT NULL DEFAULT now(),
 		updated_at         TIMESTAMPTZ NOT NULL DEFAULT now()
 	);
-
-	-- Migration: add columns for multi-backend support
-	ALTER TABLE workspaces ADD COLUMN IF NOT EXISTS log_backend TEXT NOT NULL DEFAULT 'loki';
-	ALTER TABLE workspaces ADD COLUMN IF NOT EXISTS aws_region TEXT NOT NULL DEFAULT '';
-	ALTER TABLE workspaces ADD COLUMN IF NOT EXISTS cw_log_groups TEXT NOT NULL DEFAULT '';
 
 	CREATE TABLE IF NOT EXISTS daily_usage (
 		workspace_id  TEXT NOT NULL REFERENCES workspaces(workspace_id) ON DELETE CASCADE,

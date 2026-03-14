@@ -250,22 +250,22 @@ func (h *Handler) HandleCallback(w http.ResponseWriter, r *http.Request) {
 	// Start the workspace bot via the manager, then trigger setup wizard
 	if h.mgr != nil {
 		go func() {
-			ctx := context.Background()
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+
 			if err := h.mgr.AddWorkspace(ctx, workspaceID); err != nil {
 				h.logger.Error("failed to start workspace bot after OAuth", "workspace", workspaceID, "error", err)
 				return
 			}
 
-			// Give the socket connection a moment to establish
-			time.Sleep(3 * time.Second)
-
-			if h.SlackAPIForWorkspace != nil {
-				api := h.SlackAPIForWorkspace(workspaceID)
-				if api != nil {
-					if err := h.wizard.StartSetup(api, workspaceID, installerID); err != nil {
-						h.logger.Error("failed to start setup wizard", "workspace", workspaceID, "error", err)
-					}
+			// Poll for the bot to be ready instead of sleeping a fixed duration
+			api := h.waitForWorkspaceAPI(ctx, workspaceID)
+			if api != nil {
+				if err := h.wizard.StartSetup(api, workspaceID, installerID); err != nil {
+					h.logger.Error("failed to start setup wizard", "workspace", workspaceID, "error", err)
 				}
+			} else {
+				h.logger.Error("workspace bot not ready after timeout", "workspace", workspaceID)
 			}
 		}()
 	}
@@ -454,6 +454,26 @@ func (h *Handler) HandleSlashCommand(w http.ResponseWriter, r *http.Request) {
 	}()
 
 	w.Write([]byte("Check your DMs — I've sent you a setup guide!"))
+}
+
+// waitForWorkspaceAPI polls until the workspace bot is available or context expires.
+func (h *Handler) waitForWorkspaceAPI(ctx context.Context, workspaceID string) *slack.Client {
+	if h.SlackAPIForWorkspace == nil {
+		return nil
+	}
+	ticker := time.NewTicker(500 * time.Millisecond)
+	defer ticker.Stop()
+
+	for {
+		if api := h.SlackAPIForWorkspace(workspaceID); api != nil {
+			return api
+		}
+		select {
+		case <-ctx.Done():
+			return nil
+		case <-ticker.C:
+		}
+	}
 }
 
 func (h *Handler) getAPIForPayload(payload slack.InteractionCallback) *slack.Client {

@@ -272,39 +272,41 @@ func runMultiTenant(ctx context.Context, cfg *config.Config, logger *slog.Logger
 	httpServer.Shutdown(shutdownCtx)
 }
 
-// seedWorkspaceFromEnv creates or updates Grey's workspace from legacy env vars.
+// seedWorkspaceFromEnv creates or updates a workspace from legacy env vars.
 // This ensures backwards compatibility — set the old env vars plus DATABASE_URL
-// and Grey's workspace auto-seeds into the database.
+// and the workspace auto-seeds into the database using the real Slack workspace ID.
 func seedWorkspaceFromEnv(ctx context.Context, cfg *config.Config, db store.WorkspaceStore, logger *slog.Logger) {
 	if cfg.SlackBotToken == "" || cfg.LokiBaseURL == "" {
 		return // no legacy config to seed
 	}
 
-	// Check if already seeded — we need a workspace ID.
-	// For seeding, use a well-known ID or derive from the bot token.
-	// We'll use "seed" as a sentinel; the real ID will come from Slack.
-	// Instead, check if there are any active workspaces — if so, skip seeding.
+	// Check if there are any active workspaces — if so, skip seeding.
 	existing, err := db.List(ctx, store.StatusActive)
 	if err == nil && len(existing) > 0 {
 		logger.Info("workspaces already exist, skipping env seed")
 		return
 	}
 
-	// Determine Gemini key for the seed workspace
-	geminiKey := cfg.GeminiAPIKey
+	// Resolve the actual Slack workspace ID from the bot token
+	api := slack.New(cfg.SlackBotToken)
+	authResp, err := api.AuthTestContext(ctx)
+	if err != nil {
+		logger.Warn("failed to resolve workspace ID from bot token, using fallback", "error", err)
+		authResp = &slack.AuthTestResponse{TeamID: "env-seed", Team: "Default"}
+	}
 
 	ws := &store.Workspace{
-		WorkspaceID:      "seed-workspace",
-		TeamName:         "Grey",
-		BotToken:         cfg.SlackBotToken,
-		LokiURL:          cfg.LokiBaseURL,
-		LokiAPIKey:       cfg.LokiAPIKey,
-		GeminiAPIKey:     geminiKey,
-		DailyQueryLimit:  100,
-		MaxTimeRange:     cfg.MaxTimeRange,
-		MaxResults:       cfg.MaxResults,
-		InstalledBy:      "env-seed",
-		Status:           store.StatusActive,
+		WorkspaceID:     authResp.TeamID,
+		TeamName:        authResp.Team,
+		BotToken:        cfg.SlackBotToken,
+		LokiURL:         cfg.LokiBaseURL,
+		LokiAPIKey:      cfg.LokiAPIKey,
+		GeminiAPIKey:    cfg.GeminiAPIKey,
+		DailyQueryLimit: 100,
+		MaxTimeRange:    cfg.MaxTimeRange,
+		MaxResults:      cfg.MaxResults,
+		InstalledBy:     "env-seed",
+		Status:          store.StatusActive,
 	}
 
 	if err := db.Create(ctx, ws); err != nil {
@@ -315,7 +317,10 @@ func seedWorkspaceFromEnv(ctx context.Context, cfg *config.Config, db store.Work
 		}
 	}
 
-	logger.Info("seeded Grey workspace from environment variables")
+	logger.Info("seeded workspace from environment variables",
+		"workspace_id", authResp.TeamID,
+		"team_name", authResp.Team,
+	)
 }
 
 func parseLogLevel(level string) slog.Level {

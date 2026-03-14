@@ -267,7 +267,9 @@ func buildLogSource(ctx context.Context, ws *store.Workspace, auditLogger *audit
 		}
 		return source, nil
 	default:
-		// Default to Loki
+		if ws.LogBackend != "" && ws.LogBackend != "loki" {
+			logger.Warn("unknown log backend, defaulting to loki", "backend", ws.LogBackend)
+		}
 		lokiClient := loki.NewHTTPClient(loki.ClientConfig{
 			BaseURL:    ws.LokiURL,
 			APIKey:     ws.LokiAPIKey,
