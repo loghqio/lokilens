@@ -87,9 +87,10 @@ func (c *Client) RunInsightsQuery(ctx context.Context, logGroups []string, query
 }
 
 // pollQueryResults polls GetQueryResults until the query completes or fails.
+// Uses exponential backoff: starts at 200ms, grows 1.5x each poll, caps at 5s.
 func (c *Client) pollQueryResults(ctx context.Context, queryID string) (*QueryResult, error) {
-	ticker := time.NewTicker(500 * time.Millisecond)
-	defer ticker.Stop()
+	backoff := 200 * time.Millisecond
+	maxBackoff := 5 * time.Second
 
 	// Cap polling at 60 seconds to avoid hanging on expensive queries.
 	deadline := time.After(60 * time.Second)
@@ -100,7 +101,7 @@ func (c *Client) pollQueryResults(ctx context.Context, queryID string) (*QueryRe
 			return nil, ctx.Err()
 		case <-deadline:
 			return nil, fmt.Errorf("query %s timed out after 60s", queryID)
-		case <-ticker.C:
+		case <-time.After(backoff):
 			resp, err := c.cw.GetQueryResults(ctx, &cloudwatchlogs.GetQueryResultsInput{
 				QueryId: aws.String(queryID),
 			})
@@ -115,14 +116,17 @@ func (c *Client) pollQueryResults(ctx context.Context, queryID string) (*QueryRe
 					Stats:   resp.Statistics,
 				}, nil
 			case types.QueryStatusFailed:
-				return nil, fmt.Errorf("query failed")
+				return nil, fmt.Errorf("query %s failed — check query syntax and log group permissions", queryID)
 			case types.QueryStatusCancelled:
-				return nil, fmt.Errorf("query was cancelled")
+				return nil, fmt.Errorf("query %s was cancelled", queryID)
 			case types.QueryStatusTimeout:
-				return nil, fmt.Errorf("query timed out on CloudWatch side")
-			case types.QueryStatusRunning, types.QueryStatusScheduled:
-				continue
+				return nil, fmt.Errorf("query %s timed out on CloudWatch side", queryID)
 			default:
+				// Still running — increase backoff
+				backoff = time.Duration(float64(backoff) * 1.5)
+				if backoff > maxBackoff {
+					backoff = maxBackoff
+				}
 				continue
 			}
 		}

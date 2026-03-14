@@ -296,8 +296,12 @@ func (s *CloudWatchSource) queryLogs(ctx context.Context, input QueryLogsInput) 
 	// When zero results, add diagnostic hints so the model investigates instead of giving up
 	if len(out.Logs) == 0 {
 		hints := "ZERO RESULTS — do NOT tell the user there are no logs without investigating first. "
-		hints += "Try: (1) widen time range to 6h or 24h, (2) remove filters to get raw logs (fields @timestamp, @message), "
-		hints += "(3) call list_log_groups to verify the log group name exists exactly as specified. "
+		hints += "Try: (1) widen time range to 6h or 24h, (2) remove filters to get raw logs (fields @timestamp, @message | sort @timestamp desc | limit 10), "
+		hints += "(3) call list_log_groups to verify the log group name exists exactly as specified — "
+		hints += "CloudWatch log group names are case-sensitive and often have prefixes like /aws/lambda/, /aws/ecs/, /ecs/, etc. "
+		hints += "(4) call get_log_fields to verify the field names you're filtering on actually exist in this log group — "
+		hints += "field names are case-sensitive (e.g. 'level' vs 'Level' vs 'severity'). "
+		hints += "(5) check that your Insights syntax is correct: use 'like /regex/' not '=~ \"regex\"', use 'filter' not 'where'. "
 		if len(s.logGroups) > 0 {
 			hints += fmt.Sprintf("Configured log groups: %v", s.logGroups)
 		}
@@ -439,8 +443,10 @@ func (s *CloudWatchSource) queryStats(ctx context.Context, input QueryStatsInput
 	// When zero results, add diagnostic hints
 	if len(out.Series) == 0 {
 		hints := "ZERO RESULTS — do NOT tell the user there are no logs without investigating first. "
-		hints += "Try: (1) widen time range to 6h or 24h, (2) simplify the query, "
-		hints += "(3) call list_log_groups to verify the log group name exists exactly as specified."
+		hints += "Try: (1) widen time range to 6h or 24h, (2) simplify the query — remove all filters and run bare stats count(*) by bin(5m), "
+		hints += "(3) call list_log_groups to verify the log group name exists exactly — names are case-sensitive with prefixes like /aws/lambda/, /ecs/, "
+		hints += "(4) call get_log_fields to verify field names exist in this log group, "
+		hints += "(5) check Insights syntax: use 'like /regex/' not '=~ \"regex\"', 'filter' not 'where'."
 		if out.Warning != "" {
 			out.Warning += "; " + hints
 		} else {
@@ -457,6 +463,11 @@ func (s *CloudWatchSource) queryStats(ctx context.Context, input QueryStatsInput
 // parseStatsResults converts CloudWatch Insights stats output into MetricSeries.
 func (s *CloudWatchSource) parseStatsResults(result *QueryResult) []agent.MetricSeries {
 	if len(result.Results) == 0 {
+		return nil
+	}
+
+	// Guard against empty first row — CloudWatch can return rows with zero fields
+	if len(result.Results[0]) == 0 {
 		return nil
 	}
 
@@ -547,6 +558,7 @@ func (s *CloudWatchSource) parseGroupedResults(result *QueryResult) []agent.Metr
 	for _, row := range result.Results {
 		labels := make(map[string]string)
 		var value string
+		hasData := false
 
 		for _, field := range row {
 			if field.Field == nil || field.Value == nil {
@@ -559,11 +571,18 @@ func (s *CloudWatchSource) parseGroupedResults(result *QueryResult) []agent.Metr
 			case name == "count(*)" || name == "count" || name == "cnt" ||
 				name == "sum" || name == "avg" || name == "max" || name == "min":
 				value = val
+				hasData = true
 			case name == "@ptr":
-				// skip
+				// skip internal pointer field
 			default:
 				labels[name] = val
+				hasData = true
 			}
+		}
+
+		// Skip rows with no meaningful data (e.g. only @ptr fields or empty rows)
+		if !hasData {
+			continue
 		}
 
 		if value == "" {

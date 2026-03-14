@@ -378,6 +378,134 @@ func TestSanitizeTimeRange_SwappedAndExcessive(t *testing.T) {
 	}
 }
 
+func TestParseStatsResults_EmptyFirstRow(t *testing.T) {
+	s := &CloudWatchSource{}
+
+	// CloudWatch can return a row with zero fields
+	result := &QueryResult{
+		Results: [][]types.ResultField{
+			{}, // empty first row
+		},
+	}
+
+	series := s.parseStatsResults(result)
+	if series != nil {
+		t.Errorf("expected nil for empty first row, got %v", series)
+	}
+}
+
+func TestParseGroupedResults_OnlyPtrFields(t *testing.T) {
+	s := &CloudWatchSource{}
+
+	// Rows with only @ptr fields should be skipped
+	result := &QueryResult{
+		Results: [][]types.ResultField{
+			{
+				{Field: strPtr("@ptr"), Value: strPtr("some-internal-pointer")},
+			},
+			{
+				{Field: strPtr("service"), Value: strPtr("payments")},
+				{Field: strPtr("count(*)"), Value: strPtr("42")},
+				{Field: strPtr("@ptr"), Value: strPtr("another-pointer")},
+			},
+		},
+	}
+
+	series := s.parseGroupedResults(result)
+
+	if len(series) != 1 {
+		t.Fatalf("expected 1 series (ptr-only row skipped), got %d", len(series))
+	}
+	if series[0].Labels["service"] != "payments" {
+		t.Errorf("expected service=payments, got %v", series[0].Labels)
+	}
+	if series[0].Values[0].Value != "42" {
+		t.Errorf("expected value=42, got %q", series[0].Values[0].Value)
+	}
+}
+
+func TestParseGroupedResults_NilFields(t *testing.T) {
+	s := &CloudWatchSource{}
+
+	// Rows with nil field pointers should not panic
+	result := &QueryResult{
+		Results: [][]types.ResultField{
+			{
+				{Field: nil, Value: strPtr("orphan-value")},
+				{Field: strPtr("service"), Value: nil},
+				{Field: strPtr("count(*)"), Value: strPtr("10")},
+			},
+		},
+	}
+
+	series := s.parseGroupedResults(result)
+
+	if len(series) != 1 {
+		t.Fatalf("expected 1 series, got %d", len(series))
+	}
+	if series[0].Values[0].Value != "10" {
+		t.Errorf("expected value=10, got %q", series[0].Values[0].Value)
+	}
+}
+
+func TestParseGroupedResults_EmptyRow(t *testing.T) {
+	s := &CloudWatchSource{}
+
+	result := &QueryResult{
+		Results: [][]types.ResultField{
+			{}, // completely empty row
+			{
+				{Field: strPtr("service"), Value: strPtr("orders")},
+				{Field: strPtr("count(*)"), Value: strPtr("5")},
+			},
+		},
+	}
+
+	series := s.parseGroupedResults(result)
+
+	if len(series) != 1 {
+		t.Fatalf("expected 1 series (empty row skipped), got %d", len(series))
+	}
+	if series[0].Labels["service"] != "orders" {
+		t.Errorf("expected service=orders, got %v", series[0].Labels)
+	}
+}
+
+func TestParseTimeSeriesResults_NilFields(t *testing.T) {
+	s := &CloudWatchSource{}
+
+	// Ensure nil fields in time series don't panic
+	result := &QueryResult{
+		Results: [][]types.ResultField{
+			{
+				{Field: strPtr("bin(5m)"), Value: strPtr("2024-01-15 14:00:00.000")},
+				{Field: nil, Value: strPtr("orphan")},
+				{Field: strPtr("count(*)"), Value: nil},
+			},
+			{
+				{Field: strPtr("bin(5m)"), Value: strPtr("2024-01-15 14:05:00.000")},
+				{Field: strPtr("count(*)"), Value: strPtr("7")},
+			},
+		},
+	}
+
+	series := s.parseStatsResults(result)
+
+	if len(series) != 1 {
+		t.Fatalf("expected 1 series, got %d", len(series))
+	}
+	// First point has nil count → defaults to "1", second has "7"
+	if len(series[0].Values) != 2 {
+		t.Fatalf("expected 2 data points, got %d", len(series[0].Values))
+	}
+	if series[0].Values[0].Value != "1" {
+		t.Errorf("expected default value=1 for nil count, got %q", series[0].Values[0].Value)
+	}
+	if series[0].Values[1].Value != "7" {
+		t.Errorf("expected value=7, got %q", series[0].Values[1].Value)
+	}
+}
+
 func strPtr(s string) *string {
 	return &s
 }
