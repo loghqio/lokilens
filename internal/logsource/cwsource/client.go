@@ -54,6 +54,15 @@ type QueryResult struct {
 
 // RunInsightsQuery executes a CloudWatch Insights query and polls until complete.
 func (c *Client) RunInsightsQuery(ctx context.Context, logGroups []string, query string, start, end time.Time, limit int32) (*QueryResult, error) {
+	// Guard against swapped times — the LLM can generate bad parameters
+	if end.Before(start) {
+		start, end = end, start
+	}
+	// Default to last 1 hour if times are equal
+	if start.Equal(end) {
+		start = end.Add(-1 * time.Hour)
+	}
+
 	c.logger.Debug("starting insights query",
 		"log_groups", logGroups,
 		"query", query,
